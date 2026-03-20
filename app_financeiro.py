@@ -220,7 +220,18 @@ if st.sidebar.button("Analisar Ativo"):
             fig_ml.add_trace(go.Scatter(x=df_xgb['Date'], y=df_xgb['Predicao'], line=dict(color='red', width=2, dash='dash'), name='Predição XGBoost'))
             fig_ml.add_trace(go.Scatter(x=df_lstm['Date'], y=df_lstm['Predicao'], line=dict(color='blue', width=2, dash='dot'), name='Predição LSTM'))
             
-            fig_ml.update_layout(height=500, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            fig_ml.update_layout(
+                height=500, 
+                template="plotly_white", 
+                margin=dict(l=0, r=0, t=40, b=0), 
+                legend=dict(
+                    orientation="h", 
+                    yanchor="bottom", 
+                    y=1.02, 
+                    xanchor="left", # <-- Mudamos de "right" para "left"
+                    x=0             # <-- Mudamos de 1 para 0 (início do eixo X)
+                )
+            )
             st.plotly_chart(fig_ml, use_container_width=True)
 
         # ==========================================
