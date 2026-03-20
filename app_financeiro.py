@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +10,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 import google.generativeai as genai
 
 # --- Configuração da Página ---
@@ -30,7 +31,6 @@ else:
 st.sidebar.markdown("---")
 
 # --- 1. Coleta e Pré-processamento Otimizado ---
-# O ttl="1d" resolve a lentidão! Mantém os dados no cache por 1 dia.
 @st.cache_data(ttl="1d", show_spinner=False)
 def carregar_e_processar_dados(ticker, anos):
     end_date = datetime.now()
@@ -54,7 +54,7 @@ def carregar_e_processar_dados(ticker, anos):
     return df
 
 # --- 2. Modelos de Machine Learning ---
-@st.cache_resource(show_spinner=False) # Cache para não retreinar modelos à toa
+@st.cache_resource(show_spinner=False)
 def prever_xgboost(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
     df_ml['Lag_1'], df_ml['Lag_2'], df_ml['Lag_7'] = df_ml['Close'].shift(1), df_ml['Close'].shift(2), df_ml['Close'].shift(7)
@@ -92,7 +92,7 @@ def prever_lstm(df, dias_futuros):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df_ml['Close'].values.reshape(-1, 1))
     
-    lookback = 30
+    lookback = 60 # Memória estendida para 2 meses
     X, y = [], []
     for i in range(lookback, len(scaled_data)):
         X.append(scaled_data[i-lookback:i, 0])
@@ -103,10 +103,19 @@ def prever_lstm(df, dias_futuros):
     split_idx = len(X) - dias_futuros
     X_train, y_train, X_test, y_test = X[:split_idx], y[:split_idx], X[split_idx:], y[split_idx:]
     
+    def construir_modelo():
+        modelo = Sequential()
+        modelo.add(LSTM(units=64, return_sequences=True, input_shape=(lookback, 1)))
+        modelo.add(Dropout(0.2))
+        modelo.add(LSTM(units=64, return_sequences=False))
+        modelo.add(Dropout(0.2))
+        modelo.add(Dense(units=1))
+        modelo.compile(optimizer='adam', loss='mean_squared_error')
+        return modelo
+    
     # Modelo Avaliação
-    modelo_aval = Sequential([LSTM(32, input_shape=(lookback, 1)), Dense(1)])
-    modelo_aval.compile(optimizer='adam', loss='mean_squared_error')
-    modelo_aval.fit(X_train, y_train, batch_size=16, epochs=5, verbose=0)
+    modelo_aval = construir_modelo()
+    modelo_aval.fit(X_train, y_train, batch_size=32, epochs=20, verbose=0)
     
     pred_teste_scaled = modelo_aval.predict(X_test, verbose=0)
     pred_teste = scaler.inverse_transform(pred_teste_scaled).flatten()
@@ -119,9 +128,8 @@ def prever_lstm(df, dias_futuros):
     }
     
     # Modelo Final Futuro
-    modelo_final = Sequential([LSTM(32, input_shape=(lookback, 1)), Dense(1)])
-    modelo_final.compile(optimizer='adam', loss='mean_squared_error')
-    modelo_final.fit(X, y, batch_size=16, epochs=5, verbose=0)
+    modelo_final = construir_modelo()
+    modelo_final.fit(X, y, batch_size=32, epochs=20, verbose=0)
     
     ultimos_dias = scaled_data[-lookback:]
     predicoes_futuras = []
@@ -137,7 +145,7 @@ def prever_lstm(df, dias_futuros):
 
 # --- Execução Principal ---
 if st.sidebar.button("Analisar Ativo"):
-    with st.spinner(f"Baixando dados do Yahoo Finance... (Isto será rápido nas próximas vezes)"):
+    with st.spinner("Baixando dados do Yahoo Finance... (Isto será rápido nas próximas vezes)"):
         df = carregar_e_processar_dados(ticker_symbol, anos_historico)
         
     if df.empty:
@@ -146,7 +154,7 @@ if st.sidebar.button("Analisar Ativo"):
         aba_eda, aba_ml, aba_ia = st.tabs(["📊 Análise Exploratória (EDA)", "🤖 Machine Learning & Deep Learning", "🧠 Agente Financeiro"])
 
         # ==========================================
-        # ABA 1: ANÁLISE EXPLORATÓRIA (CÓDIGO MANTIDO)
+        # ABA 1: ANÁLISE EXPLORATÓRIA
         # ==========================================
         with aba_eda:
             st.subheader(f"Métricas Principais: {ticker_symbol}")
@@ -170,6 +178,7 @@ if st.sidebar.button("Analisar Ativo"):
                 fig_dist = go.Figure()
                 fig_dist.add_trace(go.Histogram(x=df['Close'], marker_color='lightblue', opacity=0.7))
                 media, mediana = df['Close'].mean(), df['Close'].median()
+                # Textos posicionados para evitar sobreposição
                 fig_dist.add_vline(x=media, line_dash="dash", line_color="red", annotation_text=f"Média: {media:.2f}", annotation_position="top right")
                 fig_dist.add_vline(x=mediana, line_dash="dash", line_color="green", annotation_text=f"Mediana: {mediana:.2f}", annotation_position="bottom right")
                 fig_dist.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
@@ -196,67 +205,56 @@ if st.sidebar.button("Analisar Ativo"):
         # ABA 2: MACHINE LEARNING & DEEP LEARNING
         # ==========================================
         with aba_ml:
-            with st.spinner("Treinando modelos XGBoost e Rede Neural LSTM... Isso leva alguns segundos."):
+            with st.spinner("Treinando modelos XGBoost e Rede Neural LSTM Profunda... (Aguarde alguns segundos)"):
                 df_xgb, met_xgb = prever_xgboost(df, dias_predicao)
                 df_lstm, met_lstm = prever_lstm(df, dias_predicao)
             
-            # Tabela de Comparação de Métricas
             st.subheader("🏆 Comparação de Desempenho dos Modelos")
             df_metricas = pd.DataFrame({
-                'Modelo': ['XGBoost (Árvores)', 'LSTM (Rede Neural)'],
+                'Modelo': ['XGBoost (Árvores)', 'LSTM (Deep Learning)'],
                 'MAE (Menor é melhor)': [f"${met_xgb['MAE']:.3f}", f"${met_lstm['MAE']:.3f}"],
                 'RMSE (Menor é melhor)': [f"${met_xgb['RMSE']:.3f}", f"${met_lstm['RMSE']:.3f}"],
                 'R² Score (Próximo a 1 é melhor)': [f"{met_xgb['R2']:.3f}", f"{met_lstm['R2']:.3f}"]
             })
             st.dataframe(df_metricas, use_container_width=True, hide_index=True)
             
-            # Gráfico com ambas as projeções
             st.subheader(f"Projeção Futura Comparativa ({dias_predicao} dias)")
             fig_ml = go.Figure()
-            # Mostrando apenas os últimos 2 anos no gráfico para o zoom ficar bom
             dois_anos = df[df['Date'] >= (df['Date'].max() - timedelta(days=730))]
             
             fig_ml.add_trace(go.Scatter(x=dois_anos['Date'], y=dois_anos['Close'], line=dict(color='gray', width=1.5), name='Histórico Real'))
             fig_ml.add_trace(go.Scatter(x=df_xgb['Date'], y=df_xgb['Predicao'], line=dict(color='red', width=2, dash='dash'), name='Predição XGBoost'))
             fig_ml.add_trace(go.Scatter(x=df_lstm['Date'], y=df_lstm['Predicao'], line=dict(color='blue', width=2, dash='dot'), name='Predição LSTM'))
             
+            # Ajuste da legenda para o lado esquerdo
             fig_ml.update_layout(
                 height=500, 
                 template="plotly_white", 
                 margin=dict(l=0, r=0, t=40, b=0), 
-                legend=dict(
-                    orientation="h", 
-                    yanchor="bottom", 
-                    y=1.02, 
-                    xanchor="left", # <-- Mudamos de "right" para "left"
-                    x=0             # <-- Mudamos de 1 para 0 (início do eixo X)
-                )
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
             )
             st.plotly_chart(fig_ml, use_container_width=True)
 
         # ==========================================
-        # ABA 3: AGENTE FINANCEIRO (RELATÓRIO INSTITUCIONAL)
+        # ABA 3: AGENTE FINANCEIRO
         # ==========================================
         with aba_ia:
             st.subheader("Relatório Executivo: IA e Quantitativo")
             if not api_key:
                 st.warning("Configure a Chave da API do Google AI Studio na barra lateral.")
             else:
-                with st.spinner("Sintetizando dados quantitativos, coletando notícias frescas da semana e formulando o relatório..."):
+                with st.spinner("Sintetizando dados quantitativos, coletando notícias frescas e formulando o relatório..."):
                     try:
                         genai.configure(api_key=api_key)
                         agente = genai.GenerativeModel(model_name='gemini-2.5-pro')
                         
-                        # Coletando dados estatísticos
                         preco_atual = df['Close'].iloc[-1]
                         variacao = ((preco_atual - df['Close'].iloc[-90]) / df['Close'].iloc[-90]) * 100 if len(df) > 90 else 0
                         volatilidade = df['Close'].tail(30).std()
                         
-                        # COLETANDO NOTÍCIAS EM TEMPO REAL (Solução Pytonica Robusta)
                         ativo_yf = yf.Ticker(ticker_symbol)
                         noticias_brutas = ativo_yf.news
                         
-                        # Formata as 5 notícias mais recentes (se existirem) para enviar ao LLM
                         if noticias_brutas:
                             manchetes = "\n".join([f"- {n.get('title', 'Sem título')} (Fonte: {n.get('publisher', 'Desconhecida')})" for n in noticias_brutas[:5]])
                         else:
@@ -305,7 +303,6 @@ if st.sidebar.button("Analisar Ativo"):
                         resposta = agente.generate_content(prompt)
                         st.write(resposta.text)
                         
-                        # Disclaimer
                         st.markdown("---")
                         st.caption("⚠️ **Aviso Legal:** Este relatório é gerado por Inteligência Artificial a partir de modelos estatísticos. Não constitui recomendação de compra, venda ou indicação de investimento. O mercado financeiro é volátil e os dados do passado não garantem rentabilidade futura.")
                         
