@@ -242,16 +242,26 @@ if st.sidebar.button("Analisar Ativo"):
             if not api_key:
                 st.warning("Configure a Chave da API do Google AI Studio na barra lateral.")
             else:
-                with st.spinner("Sintetizando dados quantitativos e formulando o relatório macroeconômico..."):
+                with st.spinner("Sintetizando dados quantitativos, coletando notícias frescas da semana e formulando o relatório..."):
                     try:
                         genai.configure(api_key=api_key)
                         agente = genai.GenerativeModel(model_name='gemini-2.5-pro')
                         
-                        # Coletando dados adicionais para enriquecer o prompt
+                        # Coletando dados estatísticos
                         preco_atual = df['Close'].iloc[-1]
                         variacao = ((preco_atual - df['Close'].iloc[-90]) / df['Close'].iloc[-90]) * 100 if len(df) > 90 else 0
-                        volatilidade = df['Close'].tail(30).std() # Desvio padrão dos últimos 30 dias
+                        volatilidade = df['Close'].tail(30).std()
                         
+                        # COLETANDO NOTÍCIAS EM TEMPO REAL (Solução Pytonica Robusta)
+                        ativo_yf = yf.Ticker(ticker_symbol)
+                        noticias_brutas = ativo_yf.news
+                        
+                        # Formata as 5 notícias mais recentes (se existirem) para enviar ao LLM
+                        if noticias_brutas:
+                            manchetes = "\n".join([f"- {n.get('title', 'Sem título')} (Fonte: {n.get('publisher', 'Desconhecida')})" for n in noticias_brutas[:5]])
+                        else:
+                            manchetes = "Nenhuma manchete específica de grande impacto encontrada nas últimas horas para este ticker diretamente."
+
                         prompt = f"""
                         Atue como um Analista Quantitativo Sênior e Estrategista Macroeconômico de um fundo de investimentos tier-1.
                         Sua tarefa é redigir um relatório analítico executivo e profissional sobre o ativo {ticker_symbol}.
@@ -261,35 +271,41 @@ if st.sidebar.button("Analisar Ativo"):
                         - Variação (3 Meses): {variacao:.2f}%
                         - Volatilidade (Desvio Padrão 30d): ${volatilidade:.2f}
                         
+                        MANCHETES E EVENTOS DESTA SEMANA SOBRE O ATIVO:
+                        {manchetes}
+                        
                         DADOS DOS MODELOS PREDITIVOS (Projeção para {dias_predicao} dias):
                         - Previsão XGBoost (Machine Learning): ${df_xgb['Predicao'].iloc[-1]:.2f} | Confiança do Modelo -> MAE: ${met_xgb['MAE']:.2f}, R²: {met_xgb['R2']:.2f}
                         - Previsão LSTM (Deep Learning): ${df_lstm['Predicao'].iloc[-1]:.2f} | Confiança do Modelo -> MAE: ${met_lstm['MAE']:.2f}, R²: {met_lstm['R2']:.2f}
                         *(Nota: R² próximo de 1 indica alta confiabilidade. MAE menor indica menor erro médio).*
                         
-                        Com base nesses dados e no seu amplo conhecimento do cenário global, gere um relatório formatado em Markdown com os seguintes tópicos obrigatórios:
+                        Com base nesses dados quantitativos, nas manchetes frescas fornecidas e no seu amplo conhecimento do cenário global, gere um relatório formatado em Markdown com os seguintes tópicos obrigatórios:
                         
                         ### 1. Cenário Macroeconômico e Geopolítico Atual
-                        Descreva o contexto global que afeta este ativo especificamente (ex: taxas do FED, guerras, oferta/demanda).
+                        Descreva o contexto global que afeta este ativo especificamente.
                         
                         ### 2. Principais Impulsionadores de Preço (Drivers)
-                        Liste e explique brevemente os 3 principais fatores que estão movendo o preço deste ativo no momento.
+                        Liste e explique os fatores centrais que estão movendo o preço do ativo no momento.
                         
-                        ### 3. Avaliação dos Modelos Quantitativos
-                        Analise o desempenho do XGBoost vs LSTM com base no MAE e R² fornecidos. Os modelos concordam na direção do preço? Qual parece mais confiável estatisticamente? A projeção quantitativa faz sentido frente à realidade fundamentalista?
+                        ### 3. Impacto das Notícias e Eventos da Semana
+                        Analise rigorosamente como as manchetes recentes listadas acima (ou os fatos geopolíticos dos últimos dias) estão influenciando o sentimento do mercado e ditando a variação atual dos preços.
                         
-                        ### 4. Perspectivas e Riscos Futuros
+                        ### 4. Avaliação dos Modelos Quantitativos
+                        Analise o desempenho do XGBoost vs LSTM com base no MAE e R². Os modelos concordam? A projeção matemática faz sentido ou está enviesada frente aos eventos geopolíticos da semana?
+                        
+                        ### 5. Perspectivas e Riscos Futuros
                         Projete o cenário esperado para os próximos {dias_predicao} dias. Inclua riscos de cauda (eventos inesperados que podem invalidar as predições).
                         
-                        ### 5. Conclusão Executiva
+                        ### 6. Conclusão Executiva
                         Um parágrafo final resumindo a tese.
                         
-                        O tom deve ser estritamente institucional, objetivo, sofisticado e imparcial. Não utilize saudações.
+                        O tom deve ser estritamente institucional, objetivo, sofisticado e imparcial.
                         """
                         
                         resposta = agente.generate_content(prompt)
                         st.write(resposta.text)
                         
-                        # Disclaimer de responsabilidade
+                        # Disclaimer
                         st.markdown("---")
                         st.caption("⚠️ **Aviso Legal:** Este relatório é gerado por Inteligência Artificial a partir de modelos estatísticos. Não constitui recomendação de compra, venda ou indicação de investimento. O mercado financeiro é volátil e os dados do passado não garantem rentabilidade futura.")
                         
