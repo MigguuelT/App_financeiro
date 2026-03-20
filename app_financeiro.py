@@ -19,7 +19,14 @@ anos_historico = st.sidebar.number_input("Anos de histórico:", min_value=1, max
 dias_predicao = st.sidebar.slider("Dias de predição (Curto Prazo):", 30, 90, 30)
 
 st.sidebar.markdown("---")
-api_key = st.sidebar.text_input("Chave API (Google AI Studio):", type="password")
+
+# --- Configuração da Chave API (Secrets) ---
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    api_key = st.sidebar.text_input("Chave API (Google AI Studio):", type="password")
+
+st.sidebar.markdown("---")
 
 # --- 1. Coleta e Pré-processamento ---
 @st.cache_data
@@ -141,15 +148,8 @@ if st.sidebar.button("Analisar Ativo"):
 
             # --- AGENTE FINANCEIRO ---
             st.subheader("🤖 Agente Financeiro: Cenário e Geopolítica")
-            
-            # --- Configuração da Chave API ---
-			# Tenta buscar a chave nos secrets do Streamlit (Local ou Cloud)
-			if "GEMINI_API_KEY" in st.secrets:
-			    api_key = st.secrets["GEMINI_API_KEY"]
-			else:
-			    # Plano B: Input manual na barra lateral caso o secret não esteja configurado
-			    api_key = st.sidebar.text_input("Chave API (Google AI Studio):", type="password")
-			    st.sidebar.markdown("---")
+            if not api_key:
+                st.warning("Insira sua chave da API na barra lateral ou configure os Secrets para gerar o relatório.")
             else:
                 with st.spinner("Buscando manchetes em tempo real e projetando o cenário..."):
                     try:
