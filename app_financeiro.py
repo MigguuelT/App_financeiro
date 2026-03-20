@@ -10,7 +10,7 @@ import google.generativeai as genai
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Análise de Ativos & ML", layout="wide")
-st.title("📈 Análise de Ativos, Predição de Curto Prazo e Agente de IA")
+st.title("📈 Análise de Ativos, Predição e Agente de IA")
 
 # --- Barra Lateral ---
 st.sidebar.header("Parâmetros da Análise")
@@ -20,7 +20,7 @@ dias_predicao = st.sidebar.slider("Dias de predição (Curto Prazo):", 30, 90, 3
 
 st.sidebar.markdown("---")
 
-# --- Configuração da Chave API (Secrets) ---
+# --- Configuração da Chave API ---
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 else:
@@ -42,7 +42,6 @@ def carregar_e_processar_dados(ticker, anos):
     
     if df.empty: return df
 
-    # Limpeza
     df = df.dropna(subset=['Close'])
     df = df.ffill()
     df['Date'] = pd.to_datetime(df['Date'])
@@ -51,19 +50,18 @@ def carregar_e_processar_dados(ticker, anos):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
+    # Criando coluna de Ano para o YoY
+    df['Year'] = df['Date'].dt.year
     return df
 
-# --- 2. Modelo de Predição e Avaliação ---
+# --- 2. Modelo de Predição ---
 def prever_e_avaliar_xgboost(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
-    
-    # Engenharia de Recursos
     df_ml['Lag_1'] = df_ml['Close'].shift(1)
     df_ml['Lag_2'] = df_ml['Close'].shift(2)
     df_ml['Lag_7'] = df_ml['Close'].shift(7)
     df_ml = df_ml.dropna()
     
-    # --- FASE 1: Avaliação (Train/Test Split) ---
     dias_teste = dias_futuros
     train = df_ml.iloc[:-dias_teste]
     test = df_ml.iloc[-dias_teste:]
@@ -78,13 +76,10 @@ def prever_e_avaliar_xgboost(df, dias_futuros):
     mae = mean_absolute_error(y_test, pred_teste)
     rmse = np.sqrt(mean_squared_error(y_test, pred_teste))
     r2 = r2_score(y_test, pred_teste)
-    
     metricas = {'MAE': mae, 'RMSE': rmse, 'R2': r2}
     
-    # --- FASE 2: Predição Futura (Treinando com tudo) ---
     X_full = df_ml[['Lag_1', 'Lag_2', 'Lag_7']]
     y_full = df_ml['Close']
-    
     modelo_final = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1)
     modelo_final.fit(X_full, y_full)
     
@@ -93,8 +88,7 @@ def prever_e_avaliar_xgboost(df, dias_futuros):
     historico_recente = list(df_ml['Close'].tail(7).values)
     
     for _ in range(dias_futuros):
-        x_pred = pd.DataFrame([[historico_recente[-1], historico_recente[-2], historico_recente[-7]]], 
-                              columns=['Lag_1', 'Lag_2', 'Lag_7'])
+        x_pred = pd.DataFrame([[historico_recente[-1], historico_recente[-2], historico_recente[-7]]], columns=['Lag_1', 'Lag_2', 'Lag_7'])
         pred_atual = modelo_final.predict(x_pred)[0]
         predicoes.append(pred_atual)
         historico_recente.append(pred_atual)
@@ -106,70 +100,127 @@ def prever_e_avaliar_xgboost(df, dias_futuros):
 
 # --- Execução Principal ---
 if st.sidebar.button("Analisar Ativo"):
-    with st.spinner(f"Coletando dados e processando {ticker_symbol}..."):
+    with st.spinner(f"Coletando dados de {ticker_symbol}..."):
         df = carregar_e_processar_dados(ticker_symbol, anos_historico)
         
         if df.empty:
-            st.error("Nenhum dado encontrado. Verifique o Ticker.")
+            st.error("Nenhum dado encontrado. Verifique o Ticker ou sua conexão.")
         else:
-            st.subheader("📊 Estatísticas e Validação do Modelo")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Preço Atual", f"${df['Close'].iloc[-1]:.2f}")
-            
-            df_pred, df_teste, metricas = prever_e_avaliar_xgboost(df, dias_predicao)
-            
-            col2.metric("MAE (Erro Médio)", f"${metricas['MAE']:,.3f}")
-            col3.metric("RMSE (Raiz do Erro)", f"${metricas['RMSE']:,.3f}")
-            col4.metric("R² Score", f"{metricas['R2']:,.3f}")
-            
-            st.subheader("📈 Análise de Preços e Projeções Futuras")
-            fig = go.Figure()
-            
-            # Histórico
-            fig.add_trace(go.Scatter(
-                x=df['Date'], y=df['Close'], fill='tozeroy', 
-                fillcolor='rgba(210, 180, 140, 0.2)', line=dict(color='tan', width=1.5), name='Histórico'
-            ))
-            
-            # Predição Teste (Validação)
-            fig.add_trace(go.Scatter(
-                x=df_teste['Date'], y=df_teste['Predicao_Teste'],
-                line=dict(color='orange', width=2), name='Validação do Modelo (Teste)'
-            ))
-            
-            # Predição Futura
-            fig.add_trace(go.Scatter(
-                x=df_pred['Date'], y=df_pred['Predicao'],
-                line=dict(color='red', width=2, dash='dash'), name='Predição Futura (XGBoost)'
-            ))
-            
-            fig.update_layout(height=500, margin=dict(l=0, r=0, t=30, b=0), template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
+            # Organização em Abas (Tabs)
+            aba_eda, aba_ml, aba_ia = st.tabs(["📊 Análise Exploratória (EDA)", "🤖 Machine Learning", "🧠 Agente Financeiro"])
 
-            # --- AGENTE FINANCEIRO ---
-            st.subheader("🤖 Agente Financeiro: Cenário e Geopolítica")
-            if not api_key:
-                st.warning("Insira sua chave da API na barra lateral ou configure os Secrets para gerar o relatório.")
-            else:
-                with st.spinner("Buscando manchetes em tempo real e projetando o cenário..."):
-                    try:
-                        genai.configure(api_key=api_key)
-                        agente = genai.GenerativeModel(model_name='gemini-2.5-pro', tools='google_search_retrieval')
-                        
-                        preco_atual = df['Close'].iloc[-1]
-                        variacao = ((preco_atual - df['Close'].iloc[-90]) / df['Close'].iloc[-90]) * 100 if len(df) > 90 else 0
-                        
-                        prompt = f"""
-                        Busque as notícias geopolíticas e macroeconômicas mais recentes de hoje sobre o ativo {ticker_symbol} e seu setor.
-                        O ativo está cotado a ${preco_atual:.2f} (variação de {variacao:.2f}% em 3 meses). 
-                        O modelo de machine learning previu que o preço chegará a ${df_pred['Predicao'].iloc[-1]:.2f} no dia {df_pred['Date'].iloc[-1].strftime('%d/%m/%Y')}.
-                        
-                        Com base na sua busca, aja como um Agente Financeiro sênior:
-                        1. Descreva o cenário atual.
-                        2. Identifique os riscos e tendências geopolíticas de curto prazo.
-                        3. Emita um parecer sobre a viabilidade da projeção do modelo preditivo frente às notícias atuais.
-                        """
-                        resposta = agente.generate_content(prompt)
-                        st.write(resposta.text)
-                    except Exception as e:
-                        st.error(f"Erro ao processar o agente: {e}")
+            # ==========================================
+            # ABA 1: ANÁLISE EXPLORATÓRIA DE DADOS (EDA)
+            # ==========================================
+            with aba_eda:
+                st.subheader(f"Métricas Principais: {ticker_symbol}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Preço Atual", f"${df['Close'].iloc[-1]:.2f}")
+                c2.metric("Média Histórica", f"${df['Close'].mean():.2f}")
+                c3.metric("Máxima Histórica", f"${df['High'].max():.2f}")
+                c4.metric("Mínima Histórica", f"${df['Low'].min():.2f}")
+                
+                st.markdown("---")
+                
+                # Gráfico de Velas (Últimos 6 meses)
+                st.subheader("Gráfico de Velas (Últimos 6 Meses)")
+                seis_meses_atras = df['Date'].max() - timedelta(days=6*30)
+                df_6m = df[df['Date'] >= seis_meses_atras]
+                
+                fig_candle = go.Figure(data=[go.Candlestick(x=df_6m['Date'], open=df_6m['Open'], high=df_6m['High'], low=df_6m['Low'], close=df_6m['Close'])])
+                fig_candle.update_layout(xaxis_rangeslider_visible=False, height=400, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_candle, use_container_width=True)
+
+                st.markdown("---")
+                
+                # Distribuição e Boxplot lado a lado
+                col_dist, col_box = st.columns(2)
+                
+                with col_dist:
+                    st.subheader("Distribuição de Frequência (Preços)")
+                    fig_dist = go.Figure()
+                    fig_dist.add_trace(go.Histogram(x=df['Close'], marker_color='lightblue', opacity=0.7, name="Frequência"))
+                    
+                    media = df['Close'].mean()
+                    mediana = df['Close'].median()
+                    fig_dist.add_vline(x=media, line_dash="dash", line_color="red", annotation_text=f"Média: {media:.2f}")
+                    fig_dist.add_vline(x=mediana, line_dash="dash", line_color="green", annotation_text=f"Mediana: {mediana:.2f}")
+                    fig_dist.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig_dist, use_container_width=True)
+
+                with col_box:
+                    st.subheader("Box Plot de Preços")
+                    fig_box = go.Figure()
+                    fig_box.add_trace(go.Box(y=df['Close'], name=ticker_symbol, marker_color='tan'))
+                    fig_box.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig_box, use_container_width=True)
+                
+                st.markdown("---")
+                
+                # Tabela de Comparação YoY (Year over Year)
+                st.subheader("Comparação Anual de Preços e Variação (%)")
+                df_yoy = df.groupby('Year')['Close'].mean().reset_index()
+                df_yoy.columns = ['Ano', 'Preço Médio ($)']
+                df_yoy['Variação (%)'] = df_yoy['Preço Médio ($)'].pct_change() * 100
+                
+                # Formatação visual da tabela
+                df_yoy_formatado = df_yoy.copy()
+                df_yoy_formatado['Preço Médio ($)'] = df_yoy_formatado['Preço Médio ($)'].apply(lambda x: f"${x:.2f}")
+                df_yoy_formatado['Variação (%)'] = df_yoy_formatado['Variação (%)'].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "-")
+                
+                st.dataframe(df_yoy_formatado, use_container_width=True, hide_index=True)
+
+            # ==========================================
+            # ABA 2: MACHINE LEARNING (PREDIÇÃO)
+            # ==========================================
+            with aba_ml:
+                st.subheader("Validação do Modelo (XGBoost)")
+                df_pred, df_teste, metricas = prever_e_avaliar_xgboost(df, dias_predicao)
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("MAE (Erro Médio Absoluto)", f"${metricas['MAE']:,.3f}")
+                c2.metric("RMSE (Raiz do Erro Quadrático)", f"${metricas['RMSE']:,.3f}")
+                c3.metric("R² Score (Acurácia)", f"{metricas['R2']:,.3f}")
+                
+                st.subheader(f"Projeção Futura ({dias_predicao} dias)")
+                fig_ml = go.Figure()
+                fig_ml.add_trace(go.Scatter(x=df['Date'], y=df['Close'], fill='tozeroy', fillcolor='rgba(210, 180, 140, 0.2)', line=dict(color='tan', width=1.5), name='Histórico Real'))
+                fig_ml.add_trace(go.Scatter(x=df_teste['Date'], y=df_teste['Predicao_Teste'], line=dict(color='orange', width=2), name='Validação (Teste)'))
+                fig_ml.add_trace(go.Scatter(x=df_pred['Date'], y=df_pred['Predicao'], line=dict(color='red', width=2, dash='dash'), name='Predição Futura'))
+                
+                fig_ml.update_layout(height=500, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
+                st.plotly_chart(fig_ml, use_container_width=True)
+
+            # ==========================================
+            # ABA 3: AGENTE FINANCEIRO (IA GEOPOLÍTICA)
+            # ==========================================
+            with aba_ia:
+                st.subheader("Parecer do Agente Geopolítico (Gemini 2.5)")
+                if not api_key:
+                    st.warning("A Chave da API do Google AI Studio não foi encontrada. Configure-a na barra lateral.")
+                else:
+                    with st.spinner("O Agente está formulando o cenário macroeconômico atual..."):
+                        try:
+                            genai.configure(api_key=api_key)
+                            # Bug resolvido: Removido o argumento 'tools' que quebrava o SDK
+                            agente = genai.GenerativeModel(model_name='gemini-2.5-pro')
+                            
+                            preco_atual = df['Close'].iloc[-1]
+                            variacao = ((preco_atual - df['Close'].iloc[-90]) / df['Close'].iloc[-90]) * 100 if len(df) > 90 else 0
+                            
+                            prompt = f"""
+                            Atue como um Analista Financeiro Sênior e Estrategista Geopolítico.
+                            Analise o ativo {ticker_symbol} e seu setor de mercado com base no cenário global mais recente que você conhece.
+                            
+                            O ativo está cotado hoje a ${preco_atual:.2f} (variação de {variacao:.2f}% em 3 meses). 
+                            O nosso modelo preditivo aponta que o preço pode chegar a ${df_pred['Predicao'].iloc[-1]:.2f} em {dias_predicao} dias.
+                            
+                            Responda de forma analítica e profissional (em português do Brasil):
+                            1. Descreva o cenário macroeconômico e geopolítico atual que mais impacta esse ativo (guerras, inflação, supply chain, taxas do FED, etc).
+                            2. Aponte os principais riscos de curto prazo.
+                            3. Emita um parecer final dizendo se a projeção matemática do modelo preditivo faz sentido frente à realidade do mundo.
+                            """
+                            resposta = agente.generate_content(prompt)
+                            st.write(resposta.text)
+                        except Exception as e:
+                            st.error(f"Erro na comunicação com a API do Gemini: {e}")
