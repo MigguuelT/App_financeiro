@@ -143,8 +143,16 @@ if st.sidebar.button("Analisar Ativo"):
                     
                     media = df['Close'].mean()
                     mediana = df['Close'].median()
-                    fig_dist.add_vline(x=media, line_dash="dash", line_color="red", annotation_text=f"Média: {media:.2f}")
-                    fig_dist.add_vline(x=mediana, line_dash="dash", line_color="green", annotation_text=f"Mediana: {mediana:.2f}")
+                    
+                    # Ajuste: Textos em alturas diferentes para evitar sobreposição
+                    fig_dist.add_vline(x=media, line_dash="dash", line_color="red", 
+                                       annotation_text=f"Média: {media:.2f}", 
+                                       annotation_position="top right")
+                    
+                    fig_dist.add_vline(x=mediana, line_dash="dash", line_color="green", 
+                                       annotation_text=f"Mediana: {mediana:.2f}", 
+                                       annotation_position="bottom right")
+                                       
                     fig_dist.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
                     st.plotly_chart(fig_dist, use_container_width=True)
 
