@@ -9,6 +9,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
+from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 import google.generativeai as genai
 
@@ -57,27 +58,42 @@ def carregar_e_processar_dados(ticker, anos):
 def prever_xgboost(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
     
-    lags = [1, 2, 3, 4, 5, 7, 10, 14]
+    # 1. Feature Engineering Avançado: Criando Indicadores Técnicos
+    # Lags de preço
+    lags = [1, 2, 3, 5, 7, 10]
     for lag in lags:
         df_ml[f'Lag_{lag}'] = df_ml['Close'].shift(lag)
         
+    # Média Móvel Simples (SMA) de 10 e 20 dias (Tendência)
+    df_ml['SMA_10'] = df_ml['Close'].rolling(window=10).mean()
+    df_ml['SMA_20'] = df_ml['Close'].rolling(window=20).mean()
+    
+    # Índice de Força Relativa (RSI) de 14 dias (Momentum / Sobrevenda / Sobrecompra)
+    delta = df_ml['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df_ml['RSI_14'] = 100 - (100 / (1 + rs))
+        
     df_ml = df_ml.dropna()
-    features = [f'Lag_{lag}' for lag in lags]
+    
+    # Selecionando as novas features para o treinamento
+    features = [f'Lag_{lag}' for lag in lags] + ['SMA_10', 'SMA_20', 'RSI_14']
     
     train, test = df_ml.iloc[:-dias_futuros], df_ml.iloc[-dias_futuros:]
     X_train, y_train = train[features], train['Close']
     X_test, y_test = test[features], test['Close']
     
-    # Tuning Otimizado para Velocidade e Performance
     parametros = {
         'objective': 'reg:squarederror',
-        'n_estimators': 100,      # Reduzido de 200 para ser 2x mais rápido
-        'learning_rate': 0.1,     # Aumentado para compensar a redução de árvores
-        'max_depth': 5,
-        'subsample': 0.9,
-        'colsample_bytree': 0.9
+        'n_estimators': 150,
+        'learning_rate': 0.05,
+        'max_depth': 4,
+        'subsample': 0.8,
+        'colsample_bytree': 0.8
     }
     
+    # Treino e Avaliação
     modelo_aval = xgb.XGBRegressor(**parametros)
     modelo_aval.fit(X_train, y_train)
     pred_teste = modelo_aval.predict(X_test)
@@ -88,16 +104,32 @@ def prever_xgboost(df, dias_futuros):
         'R2': r2_score(y_test, pred_teste)
     }
     
+    # Modelo Final Futuro
     modelo_final = xgb.XGBRegressor(**parametros)
     modelo_final.fit(df_ml[features], df_ml['Close'])
     
+    # Predição iterativa (Atualizando as features a cada passo para o futuro)
     predicoes = []
-    historico_recente = list(df_ml['Close'].tail(max(lags)).values)
+    historico_recente = list(df_ml['Close'].values)
     
-    for _ in range(dias_futuros):
+    for i in range(dias_futuros):
+        hist_series = pd.Series(historico_recente)
+        
+        # Recalculando os indicadores para o "dia de amanhã"
         x_pred_dict = {f'Lag_{lag}': [historico_recente[-lag]] for lag in lags}
+        x_pred_dict['SMA_10'] = [hist_series.tail(10).mean()]
+        x_pred_dict['SMA_20'] = [hist_series.tail(20).mean()]
+        
+        # Recalculando o RSI de forma simplificada para a predição
+        delta_fut = hist_series.diff()
+        gain_fut = (delta_fut.where(delta_fut > 0, 0)).tail(14).mean()
+        loss_fut = (-delta_fut.where(delta_fut < 0, 0)).tail(14).mean()
+        rs_fut = gain_fut / loss_fut if loss_fut != 0 else 0
+        x_pred_dict['RSI_14'] = [100 - (100 / (1 + rs_fut))]
+        
         x_pred = pd.DataFrame(x_pred_dict)
         pred_atual = modelo_final.predict(x_pred)[0]
+        
         predicoes.append(pred_atual)
         historico_recente.append(pred_atual)
         
@@ -123,16 +155,18 @@ def prever_lstm(df, dias_futuros):
     
     def construir_modelo():
         modelo = Sequential()
-        # Arquitetura simplificada: 1 camada bem calibrada (2x mais rápido e previne overfitting)
         modelo.add(LSTM(units=50, return_sequences=False, input_shape=(lookback, 1)))
         modelo.add(Dropout(0.2))
         modelo.add(Dense(units=1))
         modelo.compile(optimizer='adam', loss='mean_squared_error')
         return modelo
     
+    # Implementando o Early Stopping para evitar overfitting da rede
+    early_stop = EarlyStopping(monitor='loss', patience=3, restore_best_weights=True)
+    
     modelo_aval = construir_modelo()
-    # Menos épocas, o suficiente para aprender sem decorar o ruído
-    modelo_aval.fit(X_train, y_train, batch_size=32, epochs=15, verbose=0)
+    # Aumentamos as épocas, mas o early stop cortará antes se necessário
+    modelo_aval.fit(X_train, y_train, batch_size=32, epochs=30, verbose=0, callbacks=[early_stop])
     
     pred_teste_scaled = modelo_aval.predict(X_test, verbose=0)
     pred_teste = scaler.inverse_transform(pred_teste_scaled).flatten()
@@ -145,7 +179,7 @@ def prever_lstm(df, dias_futuros):
     }
     
     modelo_final = construir_modelo()
-    modelo_final.fit(X, y, batch_size=32, epochs=15, verbose=0)
+    modelo_final.fit(X, y, batch_size=32, epochs=30, verbose=0, callbacks=[early_stop])
     
     ultimos_dias = scaled_data[-lookback:]
     predicoes_futuras = []
@@ -158,7 +192,7 @@ def prever_lstm(df, dias_futuros):
     predicoes_futuras = scaler.inverse_transform(np.array(predicoes_futuras).reshape(-1, 1)).flatten()
     datas_futuras = [df_ml['Date'].iloc[-1] + timedelta(days=i) for i in range(1, dias_futuros + 1)]
     return pd.DataFrame({'Date': datas_futuras, 'Predicao': predicoes_futuras}), metricas
-
+    
 # --- Execução Principal ---
 if st.sidebar.button("Analisar Ativo"):
     with st.spinner("Baixando dados do Yahoo Finance..."):
@@ -202,8 +236,24 @@ if st.sidebar.button("Analisar Ativo"):
             with col_box:
                 st.subheader("Box Plot de Preços")
                 fig_box = go.Figure()
-                fig_box.add_trace(go.Box(y=df['Close'], marker_color='tan'))
-                fig_box.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
+                fig_box.add_trace(go.Box(
+                    y=df['Close'], 
+                    name=ticker_symbol,           # Substitui "trace 0" pelo nome do ativo no eixo X
+                    marker_color='tan',
+                    boxpoints='outliers',         # Garante que pontos anômalos (outliers) fiquem visíveis
+                    yhoverformat="$,.2f"          # Formata todas as métricas do boxplot com $ e 2 casas decimais
+                ))
+                
+                fig_box.update_layout(
+                    height=350, 
+                    template="plotly_white", 
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    yaxis_title="Preço de Fechamento" # Título lateral para o eixo Y
+                )
+                
+                # Formata os números do próprio eixo Y com cifrão
+                fig_box.update_yaxes(tickprefix="$", tickformat=".2f") 
+                
                 st.plotly_chart(fig_box, use_container_width=True)
             
             st.markdown("---")
@@ -248,6 +298,30 @@ if st.sidebar.button("Analisar Ativo"):
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
             )
             st.plotly_chart(fig_ml, use_container_width=True)
+            
+            # --- BOTÃO DE EXPORTAÇÃO CSV ---
+            st.markdown("---")
+            st.subheader("📥 Exportar Dados")
+            
+            # Preparar o dataframe unificado para exportação
+            df_hist_export = df[['Date', 'Close']].rename(columns={'Close': 'Preco_Real'})
+            df_xgb_export = df_xgb.rename(columns={'Predicao': 'Predicao_XGBoost'})
+            df_lstm_export = df_lstm.rename(columns={'Predicao': 'Predicao_LSTM'})
+            
+            # Unir os dados pela data
+            df_export = pd.merge(df_hist_export, df_xgb_export, on='Date', how='outer')
+            df_export = pd.merge(df_export, df_lstm_export, on='Date', how='outer')
+            df_export = df_export.sort_values('Date').reset_index(drop=True)
+            
+            # Converter para CSV
+            csv = df_export.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                label="Descarregar Dados e Predições (CSV)",
+                data=csv,
+                file_name=f"projecao_{ticker_symbol}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
 
         # ==========================================
         # ABA 3: AGENTE FINANCEIRO
