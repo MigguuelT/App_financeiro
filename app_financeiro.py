@@ -1,9 +1,10 @@
+# --- IMPORTAÇÕES ---
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import yfinance as yf
+import plotly.graph_objects as go
 import xgboost as xgb
 from sklearn.metrics import accuracy_score, precision_score
 from sklearn.preprocessing import MinMaxScaler
@@ -13,13 +14,17 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 import google.generativeai as genai
 
-# --- Configuração da Página ---
+# ==========================================
+# CONFIGURAÇÃO INICIAL DA PÁGINA
+# ==========================================
 st.set_page_config(page_title="Análise Quantitativa & IA", layout="wide")
 st.title("📈 Análise de Ativos, Probabilidade Direcional e IA")
 
-# --- Barra Lateral ---
+# ==========================================
+# BARRA LATERAL (MENU DE INPUTS)
+# ==========================================
 st.sidebar.header("Parâmetros da Análise")
-ticker_symbol = st.sidebar.text_input("Ticker (ex: VALE3.SA, HG=F, AAPL):", "VALE3.SA").upper()
+ticker_symbol = st.sidebar.text_input("Ticker (ex: VALE3.SA, IAU, AAPL):", "VALE3.SA").upper()
 anos_historico = st.sidebar.number_input("Anos de histórico:", min_value=1, max_value=20, value=10)
 dias_predicao = st.sidebar.slider("Janela de Predição (Dias úteis):", 10, 90, 30)
 
@@ -30,7 +35,9 @@ else:
     api_key = st.sidebar.text_input("Chave API (Google AI Studio):", type="password")
 st.sidebar.markdown("---")
 
-# --- 1. Coleta e Pré-processamento Otimizado ---
+# ==========================================
+# FUNÇÃO 1: COLETA E PRÉ-PROCESSAMENTO
+# ==========================================
 @st.cache_data(ttl="1d", show_spinner=False)
 def carregar_e_processar_dados(ticker, anos):
     end_date = datetime.now()
@@ -41,7 +48,8 @@ def carregar_e_processar_dados(ticker, anos):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df.reset_index()
-    if df.empty: return df
+    
+    if df.empty: return df 
 
     df = df.dropna(subset=['Close'])
     df = df.ffill()
@@ -50,54 +58,58 @@ def carregar_e_processar_dados(ticker, anos):
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-    df['Year'] = df['Date'].dt.year
+    
+    df['Year'] = df['Date'].dt.year 
     return df
 
-# --- 2. Modelos de Machine Learning (CLASSIFICAÇÃO) ---
-@st.cache_resource(show_spinner=False)
+# ==========================================
+# FUNÇÃO 2: MODELO XGBOOST (CLASSIFICAÇÃO COM MACRO TRENDS)
+# ==========================================
+@st.cache_resource(show_spinner=False) 
 def prever_xgboost_class(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
     
-    # Engenharia de Atributos
-    lags = [1, 2, 3, 5, 7, 10]
+    # 1. Lags de curto e longo prazo (até 1 trimestre)
+    lags = [1, 5, 10, 21, 60] 
     for lag in lags:
         df_ml[f'Lag_{lag}'] = df_ml['Close'].shift(lag)
         
-    df_ml['SMA_10'] = df_ml['Close'].rolling(window=10).mean()
+    # 2. Médias Móveis de Curto, Médio e Longo Prazo
     df_ml['SMA_20'] = df_ml['Close'].rolling(window=20).mean()
+    df_ml['SMA_50'] = df_ml['Close'].rolling(window=50).mean()   # Tendência de Médio Prazo
+    df_ml['SMA_200'] = df_ml['Close'].rolling(window=200).mean() # Tendência Macroeconômica Primária
     
+    # 3. Distância do preço atual para a SMA 200 (Mede se o ativo está muito "esticado")
+    df_ml['Dist_SMA_200'] = (df_ml['Close'] - df_ml['SMA_200']) / df_ml['SMA_200']
+    
+    # 4. Volatilidade (Desvio padrão dos retornos diários no último mês)
+    df_ml['Volatilidade_21'] = df_ml['Close'].pct_change().rolling(window=21).std()
+    
+    # 5. RSI Clássico (Força Relativa)
     delta = df_ml['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df_ml['RSI_14'] = 100 - (100 / (1 + rs))
     
-    # Criando o Target (1 se o preço no futuro for maior que hoje, senão 0)
-    # Usamos o shift negativo para olhar o futuro.
+    # TARGET: 1 se o preço no futuro for maior que hoje, senão 0
     df_ml['Target'] = (df_ml['Close'].shift(-dias_futuros) > df_ml['Close']).astype(int)
     
-    df_ml = df_ml.dropna()
-    features = [f'Lag_{lag}' for lag in lags] + ['SMA_10', 'SMA_20', 'RSI_14']
+    # Remove as primeiras 200 linhas (que ficam vazias por causa da SMA_200) e os feriados sem dados
+    df_ml = df_ml.dropna() 
     
-    # Separando os dados: não podemos treinar com as últimas linhas onde o futuro é desconhecido
+    features = [f'Lag_{lag}' for lag in lags] + ['SMA_20', 'SMA_50', 'SMA_200', 'Dist_SMA_200', 'Volatilidade_21', 'RSI_14']
+    
     df_treino = df_ml.iloc[:-dias_futuros]
     
-    X = df_treino[features]
-    y = df_treino['Target']
+    X = df_treino[features] 
+    y = df_treino['Target'] 
     
-    # Validação (Split 80/20)
     split = int(len(X) * 0.8)
     X_train, X_test = X.iloc[:split], X.iloc[split:]
     y_train, y_test = y.iloc[:split], y.iloc[split:]
     
-    # Modelo XGBoost Classificador
-    parametros = {
-        'objective': 'binary:logistic',
-        'n_estimators': 100,
-        'learning_rate': 0.05,
-        'max_depth': 4,
-        'eval_metric': 'logloss'
-    }
+    parametros = {'objective': 'binary:logistic', 'n_estimators': 150, 'learning_rate': 0.05, 'max_depth': 4, 'eval_metric': 'logloss'}
     
     modelo_aval = xgb.XGBClassifier(**parametros)
     modelo_aval.fit(X_train, y_train)
@@ -108,36 +120,37 @@ def prever_xgboost_class(df, dias_futuros):
         'Precisão (Acerto de Altas)': precision_score(y_test, pred_teste, zero_division=0)
     }
     
-    # Modelo Final para prever o dia de hoje
     modelo_final = xgb.XGBClassifier(**parametros)
     modelo_final.fit(X, y)
     
     ultimo_dado = df_ml.iloc[-1:][features]
-    prob_alta = modelo_final.predict_proba(ultimo_dado)[0][1] * 100 # Pegando a probabilidade da classe 1 (Alta)
+    prob_alta = modelo_final.predict_proba(ultimo_dado)[0][1] * 100 
     
     return prob_alta, metricas
 
+# ==========================================
+# FUNÇÃO 3: REDE NEURAL LSTM (CLASSIFICAÇÃO TRIMESTRAL)
+# ==========================================
 @st.cache_resource(show_spinner=False)
 def prever_lstm_class(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
     
-    # Target Binário
     df_ml['Target'] = (df_ml['Close'].shift(-dias_futuros) > df_ml['Close']).astype(int)
     df_ml = df_ml.dropna()
     
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df_ml['Close'].values.reshape(-1, 1))
     
-    lookback = 21 
+    # Aumentamos a janela de memória para 60 dias (1 trimestre) para capturar ciclos mais longos
+    lookback = 60 
     X, y = [], []
     for i in range(lookback, len(scaled_data)):
-        X.append(scaled_data[i-lookback:i, 0])
-        y.append(df_ml['Target'].iloc[i])
+        X.append(scaled_data[i-lookback:i, 0]) 
+        y.append(df_ml['Target'].iloc[i])      
         
     X, y = np.array(X), np.array(y)
     X = np.reshape(X, (X.shape[0], X.shape[1], 1))
     
-    # Removendo o período recente cego
     X_treino = X[:-dias_futuros]
     y_treino = y[:-dias_futuros]
     
@@ -149,15 +162,14 @@ def prever_lstm_class(df, dias_futuros):
         modelo = Sequential()
         modelo.add(LSTM(units=32, return_sequences=False, input_shape=(lookback, 1)))
         modelo.add(Dropout(0.2))
-        modelo.add(Dense(units=1, activation='sigmoid')) # Sigmoid para probabilidade
+        modelo.add(Dense(units=1, activation='sigmoid')) 
         modelo.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         return modelo
     
-    early_stop = EarlyStopping(monitor='val_loss', patience=4, restore_best_weights=True)
+    early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
     
-    # Treino de Avaliação
     modelo_aval = construir_modelo()
-    modelo_aval.fit(X_train, y_train, validation_data=(X_test, y_test), batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
+    modelo_aval.fit(X_train, y_train, validation_data=(X_test, y_test), batch_size=16, epochs=50, verbose=0, callbacks=[early_stop])
     
     pred_teste_prob = modelo_aval.predict(X_test, verbose=0).flatten()
     pred_teste_classe = (pred_teste_prob > 0.5).astype(int)
@@ -167,17 +179,18 @@ def prever_lstm_class(df, dias_futuros):
         'Precisão (Acerto de Altas)': precision_score(y_test, pred_teste_classe, zero_division=0)
     }
     
-    # Treino Final
     modelo_final = construir_modelo()
-    modelo_final.fit(X_treino, y_treino, batch_size=16, epochs=40, verbose=0)
+    modelo_final.fit(X_treino, y_treino, batch_size=16, epochs=50, verbose=0) 
     
     ultimos_dias = scaled_data[-lookback:]
     x_pred = np.reshape(ultimos_dias, (1, lookback, 1))
-    prob_alta = modelo_final.predict(x_pred, verbose=0)[0][0] * 100
+    prob_alta = modelo_final.predict(x_pred, verbose=0)[0][0] * 100 
     
     return prob_alta, metricas
 
-# --- Execução Principal ---
+# ==========================================
+# MOTOR PRINCIPAL (FRONT-END)
+# ==========================================
 if st.sidebar.button("Analisar Ativo"):
     with st.spinner("Baixando dados do Yahoo Finance..."):
         df = carregar_e_processar_dados(ticker_symbol, anos_historico)
@@ -185,7 +198,6 @@ if st.sidebar.button("Analisar Ativo"):
     if df.empty:
         st.error("Nenhum dado encontrado. Verifique o Ticker ou sua conexão.")
     else:
-        # --- Captura Dinâmica da Moeda ---
         try:
             moeda = yf.Ticker(ticker_symbol).fast_info.currency
         except:
@@ -198,7 +210,7 @@ if st.sidebar.button("Analisar Ativo"):
         # ==========================================
         with aba_eda:
             st.subheader(f"Métricas Principais: {ticker_symbol}")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4 = st.columns(4) 
             c1.metric("Preço Atual", f"{moeda} {df['Close'].iloc[-1]:.2f}")
             c2.metric("Média Histórica", f"{moeda} {df['Close'].mean():.2f}")
             c3.metric("Máxima", f"{moeda} {df['High'].max():.2f}")
@@ -214,7 +226,7 @@ if st.sidebar.button("Analisar Ativo"):
                 xaxis_title="Data",
                 yaxis_title=f"Preço do Ativo ({moeda})"
             )
-            st.plotly_chart(fig_candle, use_container_width=True)
+            st.plotly_chart(fig_candle, use_container_width=True) 
 
             col_dist, col_box = st.columns(2)
             with col_dist:
@@ -238,8 +250,8 @@ if st.sidebar.button("Analisar Ativo"):
                     y=df['Close'], 
                     name=ticker_symbol, 
                     marker_color='tan',
-                    boxpoints='outliers',
-                    yhoverformat=",.2f"
+                    boxpoints='outliers', 
+                    yhoverformat=",.2f"   
                 ))
                 fig_box.update_layout(
                     height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0),
@@ -252,7 +264,7 @@ if st.sidebar.button("Analisar Ativo"):
             st.subheader("Comparação Anual de Preços e Variação (%)")
             df_yoy = df.groupby('Year')['Close'].mean().reset_index()
             df_yoy.columns = ['Ano', f'Preço Médio ({moeda})']
-            df_yoy['Variação (%)'] = df_yoy[f'Preço Médio ({moeda})'].pct_change() * 100
+            df_yoy['Variação (%)'] = df_yoy[f'Preço Médio ({moeda})'].pct_change() * 100 
             
             df_yoy_formatado = df_yoy.copy()
             df_yoy_formatado[f'Preço Médio ({moeda})'] = df_yoy_formatado[f'Preço Médio ({moeda})'].apply(lambda x: f"{moeda} {x:.2f}")
@@ -260,26 +272,51 @@ if st.sidebar.button("Analisar Ativo"):
             st.dataframe(df_yoy_formatado, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 2: MACHINE LEARNING (CLASSIFICAÇÃO)
+        # ABA 2: MACHINE LEARNING (CLASSIFICAÇÃO) E MÉDIAS MÓVEIS
         # ==========================================
         with aba_ml:
+            # NOVO GRÁFICO: Contexto de Tendência Macro (SMA)
+            st.subheader("Análise de Tendência e Contexto Macroeconômico")
+            st.write("Visualização do preço real cruzado com as principais médias móveis (Curto, Médio e Longo prazo).")
+            
+            # Filtra os últimos 2 anos para o gráfico não ficar esmagado
+            dois_anos_atras = df['Date'].max() - timedelta(days=730)
+            df_sma = df[df['Date'] >= dois_anos_atras].copy()
+            df_sma['SMA_20'] = df_sma['Close'].rolling(window=20).mean()
+            df_sma['SMA_50'] = df_sma['Close'].rolling(window=50).mean()
+            df_sma['SMA_200'] = df_sma['Close'].rolling(window=200).mean()
+            
+            fig_sma = go.Figure()
+            fig_sma.add_trace(go.Scatter(x=df_sma['Date'], y=df_sma['Close'], mode='lines', name='Preço Real', line=dict(color='gray', width=1.5)))
+            fig_sma.add_trace(go.Scatter(x=df_sma['Date'], y=df_sma['SMA_20'], mode='lines', name='SMA 20 (Curto)', line=dict(color='blue', width=1)))
+            fig_sma.add_trace(go.Scatter(x=df_sma['Date'], y=df_sma['SMA_50'], mode='lines', name='SMA 50 (Médio)', line=dict(color='orange', width=1)))
+            fig_sma.add_trace(go.Scatter(x=df_sma['Date'], y=df_sma['SMA_200'], mode='lines', name='SMA 200 (Longo)', line=dict(color='red', width=2, dash='dash')))
+            
+            fig_sma.update_layout(
+                height=450, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0),
+                xaxis_title="Data", yaxis_title=f"Preço ({moeda})",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+            )
+            st.plotly_chart(fig_sma, use_container_width=True)
+            
+            st.markdown("---")
+
             with st.spinner("Analisando probabilidades com XGBoost e LSTM... (Aguarde)"):
                 prob_xgb, met_xgb = prever_xgboost_class(df, dias_predicao)
                 prob_lstm, met_lstm = prever_lstm_class(df, dias_predicao)
             
             st.subheader(f"🎯 Probabilidade de Fechar em Alta (Daqui a {dias_predicao} dias)")
-            st.write("Estes modelos avaliam a chance direcional do ativo baseado no momento técnico.")
             
-            # Gráficos de Velocímetro
             col_gauge1, col_gauge2 = st.columns(2)
+            
             with col_gauge1:
                 fig_xgb = go.Figure(go.Indicator(
                     mode = "gauge+number", value = prob_xgb, title = {'text': "XGBoost Classifier (%)"},
                     gauge = {'axis': {'range': [0, 100]}, 'bar': {'color': "darkred"},
                              'steps': [
-                                 {'range': [0, 45], 'color': "#ffcccb"}, 
-                                 {'range': [45, 55], 'color': "#f0f0f0"}, 
-                                 {'range': [55, 100], 'color': "#d4edda"}
+                                 {'range': [0, 45], 'color': "#ffcccb"},   
+                                 {'range': [45, 55], 'color': "#f0f0f0"},  
+                                 {'range': [55, 100], 'color': "#d4edda"}  
                              ]}
                 ))
                 fig_xgb.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
@@ -307,7 +344,6 @@ if st.sidebar.button("Analisar Ativo"):
             })
             st.dataframe(df_metricas, use_container_width=True, hide_index=True)
             
-            # --- BOTÃO DE EXPORTAÇÃO CSV ---
             st.markdown("---")
             st.subheader("📥 Exportar Histórico de Dados")
             st.write("Faça o download da base de dados histórica utilizada para treinar os modelos.")
@@ -342,6 +378,7 @@ if st.sidebar.button("Analisar Ativo"):
                             elif ticker_symbol == 'GC=F': noticias_brutas = yf.Ticker('GLD').news 
                             elif ticker_symbol == 'SI=F': noticias_brutas = yf.Ticker('SLV').news 
                             elif ticker_symbol in ['BZ=F', 'CL=F']: noticias_brutas = yf.Ticker('USO').news 
+                            elif ticker_symbol == 'IAU': noticias_brutas = yf.Ticker('GLD').news # Fallback extra para IAU
                         
                         if noticias_brutas:
                             manchetes = "\n".join([f"- {n.get('title', 'Sem título')} (Fonte: {n.get('publisher', 'Desconhecida')})" for n in noticias_brutas[:5]])
