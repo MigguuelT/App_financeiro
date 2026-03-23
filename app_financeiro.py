@@ -217,7 +217,7 @@ if st.sidebar.button("Analisar Ativo"):
         aba_eda, aba_ml, aba_ia = st.tabs(["📊 Análise Exploratória", "🤖 Machine Learning Multiclasse", "🧠 Agente Financeiro"])
 
         # ==========================================
-        # ABA 1: ANÁLISE EXPLORATÓRIA
+        # ABA 1: ANÁLISE EXPLORATÓRIA (ESTILIZADA E PROFISSIONAL)
         # ==========================================
         with aba_eda:
             st.subheader(f"Métricas Principais: {ticker_symbol}")
@@ -240,19 +240,71 @@ if st.sidebar.button("Analisar Ativo"):
                 st.subheader("Distribuição de Frequência")
                 fig_dist = go.Figure()
                 fig_dist.add_trace(go.Histogram(x=df['Close'], marker_color='lightblue', opacity=0.7))
-                media, mediana = df['Close'].mean(), df['Close'].median()
-                fig_dist.add_vline(x=media, line_dash="dash", line_color="red")
-                fig_dist.add_vline(x=mediana, line_dash="dash", line_color="green")
+                media_val, mediana_val = df['Close'].mean(), df['Close'].median()
+                
+                # Restaurando as linhas verticais com anotações de valores
+                fig_dist.add_vline(x=media_val, line_dash="dash", line_color="red", 
+                                  annotation_text=f"Média: {moeda} {media_val:.2f}", annotation_position="top right")
+                fig_dist.add_vline(x=mediana_val, line_dash="dash", line_color="green", 
+                                  annotation_text=f"Mediana: {moeda} {mediana_val:.2f}", annotation_position="bottom right")
+                
                 fig_dist.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0), showlegend=False, xaxis_title=f"Preço ({moeda})", yaxis_title="Dias")
                 st.plotly_chart(fig_dist, use_container_width=True)
 
             with col_box:
                 st.subheader("Box Plot de Preços")
                 fig_box = go.Figure()
-                fig_box.add_trace(go.Box(y=df['Close'], name=ticker_symbol, marker_color='tan', boxpoints='outliers', yhoverformat=",.2f"))
+                fig_box.add_trace(go.Box(
+                    y=df['Close'], 
+                    name=ticker_symbol, 
+                    marker_color='tan', 
+                    boxpoints='outliers', 
+                    yhoverformat=",.2f",
+                    boxmean=True # <-- Linha pontilhada da Média
+                ))
                 fig_box.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0), yaxis_title=f"Preço ({moeda})")
                 fig_box.update_yaxes(tickprefix=f"{moeda} ", tickformat=".2f") 
                 st.plotly_chart(fig_box, use_container_width=True)
+            
+            # --- RESTAURANDO A TABELA DE COMPARAÇÃO ANUAL COM CORES ---
+            st.markdown("---")
+            st.subheader("Comparação Anual de Preços e Variação (%)")
+            
+            # 1. Cria o DataFrame resumido (groupby por ano e média)
+            df_yoy = df.groupby('Year')['Close'].mean().reset_index()
+            col_preco_medio = f'Preço Médio ({moeda})'
+            df_yoy.columns = ['Ano', col_preco_medio]
+            # pct_change calcula a variação percentual
+            df_yoy['Variação (%)'] = df_yoy[col_preco_medio].pct_change() * 100 
+            
+            # 2. Cria o DataFrame formatado para exibição (Moeda e símbolo %)
+            df_yoy_formatado = df_yoy.copy()
+            # Formatação profissional com a moeda dinâmica e 2 casas decimais
+            df_yoy_formatado[col_preco_medio] = df_yoy_formatado[col_preco_medio].apply(lambda x: f"{moeda} {x:.2f}")
+            
+            # Função auxiliar para formatação percentual, cuidando de valores NaN
+            def formatar_percentual(x):
+                if pd.notnull(x): return f"{x:.2f}%"
+                return "-"
+            df_yoy_formatado['Variação (%)'] = df_yoy_formatado['Variação (%)'].apply(formatar_percentual)
+            
+            # --- NOVO: Estilização Condicional (Pandas Styler) ---
+            # Função para definir a cor de fundo (background) baseada no valor
+            def estilizar_variacao(val):
+                color = '#ffcccb' if val < 0 else '#d4edda' # Vermelho claro se < 0, Verde claro se >= 0
+                return f'background-color: {color}'
+            
+            # Função para definir a cor do texto baseada no valor
+            def estilizar_texto(val):
+                color = 'red' if val < 0 else 'green' # Texto Vermelho se < 0, Verde se >= 0
+                return f'color: {color}'
+            
+            # Aplica as funções de estilização na coluna 'Variação (%)' do DataFrame
+            df_estilizado = df_yoy_formatado.style.applymap(estilizar_variacao, subset=['Variação (%)'])\
+                                                 .applymap(estilizar_texto, subset=['Variação (%)'])
+            
+            # Exibe o DataFrame estilizado
+            st.dataframe(df_estilizado, use_container_width=True, hide_index=True)
 
         # ==========================================
         # ABA 2: MACHINE LEARNING MULTICLASSE
