@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import xgboost as xgb
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import accuracy_score, precision_score
 from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
@@ -14,14 +14,14 @@ from tensorflow.keras.callbacks import EarlyStopping
 import google.generativeai as genai
 
 # --- Configuração da Página ---
-st.set_page_config(page_title="Análise de Ativos & ML", layout="wide")
-st.title("📈 Análise de Ativos, Predição Híbrida e IA")
+st.set_page_config(page_title="Análise Quantitativa & IA", layout="wide")
+st.title("📈 Análise de Ativos, Probabilidade Direcional e IA")
 
 # --- Barra Lateral ---
 st.sidebar.header("Parâmetros da Análise")
-ticker_symbol = st.sidebar.text_input("Ticker (ex: HG=F, AAPL, PETR4.SA):", "HG=F").upper()
+ticker_symbol = st.sidebar.text_input("Ticker (ex: VALE3.SA, HG=F, AAPL):", "VALE3.SA").upper()
 anos_historico = st.sidebar.number_input("Anos de histórico:", min_value=1, max_value=20, value=10)
-dias_predicao = st.sidebar.slider("Dias de predição (Curto Prazo):", 30, 90, 30)
+dias_predicao = st.sidebar.slider("Janela de Predição (Dias úteis):", 10, 90, 30)
 
 st.sidebar.markdown("---")
 if "GEMINI_API_KEY" in st.secrets:
@@ -53,11 +53,12 @@ def carregar_e_processar_dados(ticker, anos):
     df['Year'] = df['Date'].dt.year
     return df
 
-# --- 2. Modelos de Machine Learning ---
+# --- 2. Modelos de Machine Learning (CLASSIFICAÇÃO) ---
 @st.cache_resource(show_spinner=False)
-def prever_xgboost(df, dias_futuros):
+def prever_xgboost_class(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
     
+    # Engenharia de Atributos
     lags = [1, 2, 3, 5, 7, 10]
     for lag in lags:
         df_ml[f'Lag_{lag}'] = df_ml['Close'].shift(lag)
@@ -70,144 +71,111 @@ def prever_xgboost(df, dias_futuros):
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df_ml['RSI_14'] = 100 - (100 / (1 + rs))
-        
+    
+    # Criando o Target (1 se o preço no futuro for maior que hoje, senão 0)
+    # Usamos o shift negativo para olhar o futuro.
+    df_ml['Target'] = (df_ml['Close'].shift(-dias_futuros) > df_ml['Close']).astype(int)
+    
     df_ml = df_ml.dropna()
     features = [f'Lag_{lag}' for lag in lags] + ['SMA_10', 'SMA_20', 'RSI_14']
     
-    train, test = df_ml.iloc[:-dias_futuros], df_ml.iloc[-dias_futuros:]
-    X_train, y_train = train[features], train['Close']
-    X_test, y_test = test[features], test['Close']
+    # Separando os dados: não podemos treinar com as últimas linhas onde o futuro é desconhecido
+    df_treino = df_ml.iloc[:-dias_futuros]
     
+    X = df_treino[features]
+    y = df_treino['Target']
+    
+    # Validação (Split 80/20)
+    split = int(len(X) * 0.8)
+    X_train, X_test = X.iloc[:split], X.iloc[split:]
+    y_train, y_test = y.iloc[:split], y.iloc[split:]
+    
+    # Modelo XGBoost Classificador
     parametros = {
-        'objective': 'reg:squarederror',
-        'n_estimators': 150,
+        'objective': 'binary:logistic',
+        'n_estimators': 100,
         'learning_rate': 0.05,
         'max_depth': 4,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8
+        'eval_metric': 'logloss'
     }
     
-    modelo_aval = xgb.XGBRegressor(**parametros)
+    modelo_aval = xgb.XGBClassifier(**parametros)
     modelo_aval.fit(X_train, y_train)
     pred_teste = modelo_aval.predict(X_test)
     
     metricas = {
-        'MAE': mean_absolute_error(y_test, pred_teste),
-        'RMSE': np.sqrt(mean_squared_error(y_test, pred_teste)),
-        'R2': r2_score(y_test, pred_teste)
+        'Acurácia': accuracy_score(y_test, pred_teste),
+        'Precisão (Acerto de Altas)': precision_score(y_test, pred_teste, zero_division=0)
     }
     
-    modelo_final = xgb.XGBRegressor(**parametros)
-    modelo_final.fit(df_ml[features], df_ml['Close'])
+    # Modelo Final para prever o dia de hoje
+    modelo_final = xgb.XGBClassifier(**parametros)
+    modelo_final.fit(X, y)
     
-    predicoes = []
-    historico_recente = list(df_ml['Close'].values)
+    ultimo_dado = df_ml.iloc[-1:][features]
+    prob_alta = modelo_final.predict_proba(ultimo_dado)[0][1] * 100 # Pegando a probabilidade da classe 1 (Alta)
     
-    for i in range(dias_futuros):
-        hist_series = pd.Series(historico_recente)
-        x_pred_dict = {f'Lag_{lag}': [historico_recente[-lag]] for lag in lags}
-        x_pred_dict['SMA_10'] = [hist_series.tail(10).mean()]
-        x_pred_dict['SMA_20'] = [hist_series.tail(20).mean()]
-        
-        delta_fut = hist_series.diff()
-        gain_fut = (delta_fut.where(delta_fut > 0, 0)).tail(14).mean()
-        loss_fut = (-delta_fut.where(delta_fut < 0, 0)).tail(14).mean()
-        rs_fut = gain_fut / loss_fut if loss_fut != 0 else 0
-        x_pred_dict['RSI_14'] = [100 - (100 / (1 + rs_fut))]
-        
-        x_pred = pd.DataFrame(x_pred_dict)
-        pred_atual = modelo_final.predict(x_pred)[0]
-        
-        predicoes.append(pred_atual)
-        historico_recente.append(pred_atual)
-        
-    datas_futuras = [df_ml['Date'].iloc[-1] + timedelta(days=i) for i in range(1, dias_futuros + 1)]
-    return pd.DataFrame({'Date': datas_futuras, 'Predicao': predicoes}), metricas
+    return prob_alta, metricas
 
 @st.cache_resource(show_spinner=False)
-def prever_lstm(df, dias_futuros):
-    from sklearn.preprocessing import StandardScaler # Usamos o Standard em vez do MinMax para a variação
-    
+def prever_lstm_class(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
     
-    # O PULO DO GATO: Prever a diferença diária (momentum) e não o preço absoluto
-    df_ml['Diff'] = df_ml['Close'].diff()
+    # Target Binário
+    df_ml['Target'] = (df_ml['Close'].shift(-dias_futuros) > df_ml['Close']).astype(int)
     df_ml = df_ml.dropna()
     
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(df_ml['Diff'].values.reshape(-1, 1))
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(df_ml['Close'].values.reshape(-1, 1))
     
     lookback = 21 
     X, y = [], []
     for i in range(lookback, len(scaled_data)):
         X.append(scaled_data[i-lookback:i, 0])
-        y.append(scaled_data[i, 0])
+        y.append(df_ml['Target'].iloc[i])
+        
     X, y = np.array(X), np.array(y)
     X = np.reshape(X, (X.shape[0], X.shape[1], 1))
     
-    split_idx = len(X) - dias_futuros
-    X_train, y_train, X_test, y_test = X[:split_idx], y[:split_idx], X[split_idx:], y[split_idx:]
+    # Removendo o período recente cego
+    X_treino = X[:-dias_futuros]
+    y_treino = y[:-dias_futuros]
+    
+    split_idx = int(len(X_treino) * 0.8)
+    X_train, y_train = X_treino[:split_idx], y_treino[:split_idx]
+    X_test, y_test = X_treino[split_idx:], y_treino[split_idx:]
     
     def construir_modelo():
         modelo = Sequential()
         modelo.add(LSTM(units=32, return_sequences=False, input_shape=(lookback, 1)))
         modelo.add(Dropout(0.2))
-        modelo.add(Dense(units=1))
-        otimizador = tf.keras.optimizers.Adam(learning_rate=0.001)
-        modelo.compile(optimizer=otimizador, loss='mean_squared_error')
+        modelo.add(Dense(units=1, activation='sigmoid')) # Sigmoid para probabilidade
+        modelo.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         return modelo
     
-    early_stop = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
+    early_stop = EarlyStopping(monitor='val_loss', patience=4, restore_best_weights=True)
     
-    # 1. Treino para Avaliação (Test Set)
+    # Treino de Avaliação
     modelo_aval = construir_modelo()
-    modelo_aval.fit(X_train, y_train, batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
+    modelo_aval.fit(X_train, y_train, validation_data=(X_test, y_test), batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
     
-    pred_teste_scaled = modelo_aval.predict(X_test, verbose=0)
-    pred_teste_diff = scaler.inverse_transform(pred_teste_scaled).flatten()
-    
-    # Reconstruir os preços do Teste a partir das variações previstas
-    preco_base_teste = df_ml['Close'].iloc[-(dias_futuros + 1)]
-    pred_teste_preco = []
-    preco_atual = preco_base_teste
-    
-    for diff in pred_teste_diff:
-        preco_atual += diff
-        pred_teste_preco.append(preco_atual)
-        
-    y_test_real_preco = df_ml['Close'].iloc[-dias_futuros:].values
+    pred_teste_prob = modelo_aval.predict(X_test, verbose=0).flatten()
+    pred_teste_classe = (pred_teste_prob > 0.5).astype(int)
     
     metricas = {
-        'MAE': mean_absolute_error(y_test_real_preco, pred_teste_preco),
-        'RMSE': np.sqrt(mean_squared_error(y_test_real_preco, pred_teste_preco)),
-        'R2': r2_score(y_test_real_preco, pred_teste_preco)
+        'Acurácia': accuracy_score(y_test, pred_teste_classe),
+        'Precisão (Acerto de Altas)': precision_score(y_test, pred_teste_classe, zero_division=0)
     }
     
-    # 2. Treino Final para o Futuro
+    # Treino Final
     modelo_final = construir_modelo()
-    modelo_final.fit(X, y, batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
+    modelo_final.fit(X_treino, y_treino, batch_size=16, epochs=40, verbose=0)
     
-    ultimos_dias_diff = scaled_data[-lookback:]
-    predicoes_futuras_diff = []
+    ultimos_dias = scaled_data[-lookback:]
+    x_pred = np.reshape(ultimos_dias, (1, lookback, 1))
+    prob_alta = modelo_final.predict(x_pred, verbose=0)[0][0] * 100
     
-    for _ in range(dias_futuros):
-        x_pred = np.reshape(ultimos_dias_diff, (1, lookback, 1))
-        pred_atual_scaled = modelo_final.predict(x_pred, verbose=0)
-        predicoes_futuras_diff.append(pred_atual_scaled[0, 0])
-        ultimos_dias_diff = np.append(ultimos_dias_diff[1:], pred_atual_scaled, axis=0)
-        
-    predicoes_futuras_diff = scaler.inverse_transform(np.array(predicoes_futuras_diff).reshape(-1, 1)).flatten()
-    
-    # Reconstruir os preços do Futuro
-    preco_ultimo_real = df_ml['Close'].iloc[-1]
-    predicoes_futuras_preco = []
-    
-    for diff in predicoes_futuras_diff:
-        preco_ultimo_real += diff
-        predicoes_futuras_preco.append(preco_ultimo_real)
-        
-    datas_futuras = [df_ml['Date'].iloc[-1] + timedelta(days=i) for i in range(1, dias_futuros + 1)]
-    return pd.DataFrame({'Date': datas_futuras, 'Predicao': predicoes_futuras_preco}), metricas
+    return prob_alta, metricas
 
 # --- Execução Principal ---
 if st.sidebar.button("Analisar Ativo"):
@@ -223,7 +191,7 @@ if st.sidebar.button("Analisar Ativo"):
         except:
             moeda = "BRL" if ticker_symbol.endswith(".SA") else "USD"
 
-        aba_eda, aba_ml, aba_ia = st.tabs(["📊 Análise Exploratória (EDA)", "🤖 Machine Learning & Deep Learning", "🧠 Agente Financeiro"])
+        aba_eda, aba_ml, aba_ia = st.tabs(["📊 Análise Exploratória (EDA)", "🤖 Machine Learning Direcional", "🧠 Agente Financeiro"])
 
         # ==========================================
         # ABA 1: ANÁLISE EXPLORATÓRIA
@@ -232,7 +200,7 @@ if st.sidebar.button("Analisar Ativo"):
             st.subheader(f"Métricas Principais: {ticker_symbol}")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Preço Atual", f"{moeda} {df['Close'].iloc[-1]:.2f}")
-            c2.metric("Média", f"{moeda} {df['Close'].mean():.2f}")
+            c2.metric("Média Histórica", f"{moeda} {df['Close'].mean():.2f}")
             c3.metric("Máxima", f"{moeda} {df['High'].max():.2f}")
             c4.metric("Mínima", f"{moeda} {df['Low'].min():.2f}")
             
@@ -292,55 +260,62 @@ if st.sidebar.button("Analisar Ativo"):
             st.dataframe(df_yoy_formatado, use_container_width=True, hide_index=True)
 
         # ==========================================
-        # ABA 2: MACHINE LEARNING & DEEP LEARNING
+        # ABA 2: MACHINE LEARNING (CLASSIFICAÇÃO)
         # ==========================================
         with aba_ml:
-            with st.spinner("Treinando modelos XGBoost e Rede Neural LSTM Otimizada... (Aguarde alguns segundos)"):
-                df_xgb, met_xgb = prever_xgboost(df, dias_predicao)
-                df_lstm, met_lstm = prever_lstm(df, dias_predicao)
+            with st.spinner("Analisando probabilidades com XGBoost e LSTM... (Aguarde)"):
+                prob_xgb, met_xgb = prever_xgboost_class(df, dias_predicao)
+                prob_lstm, met_lstm = prever_lstm_class(df, dias_predicao)
             
-            st.subheader("🏆 Comparação de Desempenho dos Modelos")
+            st.subheader(f"🎯 Probabilidade de Fechar em Alta (Daqui a {dias_predicao} dias)")
+            st.write("Estes modelos avaliam a chance direcional do ativo baseado no momento técnico.")
+            
+            # Gráficos de Velocímetro
+            col_gauge1, col_gauge2 = st.columns(2)
+            with col_gauge1:
+                fig_xgb = go.Figure(go.Indicator(
+                    mode = "gauge+number", value = prob_xgb, title = {'text': "XGBoost Classifier (%)"},
+                    gauge = {'axis': {'range': [0, 100]}, 'bar': {'color': "darkred"},
+                             'steps': [
+                                 {'range': [0, 45], 'color': "#ffcccb"}, 
+                                 {'range': [45, 55], 'color': "#f0f0f0"}, 
+                                 {'range': [55, 100], 'color': "#d4edda"}
+                             ]}
+                ))
+                fig_xgb.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
+                st.plotly_chart(fig_xgb, use_container_width=True)
+                
+            with col_gauge2:
+                fig_lstm = go.Figure(go.Indicator(
+                    mode = "gauge+number", value = prob_lstm, title = {'text': "LSTM Classifier (%)"},
+                    gauge = {'axis': {'range': [0, 100]}, 'bar': {'color': "darkblue"},
+                             'steps': [
+                                 {'range': [0, 45], 'color': "#ffcccb"}, 
+                                 {'range': [45, 55], 'color': "#f0f0f0"}, 
+                                 {'range': [55, 100], 'color': "#d4edda"}
+                             ]}
+                ))
+                fig_lstm.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
+                st.plotly_chart(fig_lstm, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("🏆 Confiabilidade Histórica dos Modelos")
             df_metricas = pd.DataFrame({
-                'Modelo': ['XGBoost Tunado', 'LSTM Otimizada'],
-                'MAE (Menor é melhor)': [f"{moeda} {met_xgb['MAE']:.3f}", f"{moeda} {met_lstm['MAE']:.3f}"],
-                'RMSE (Menor é melhor)': [f"{moeda} {met_xgb['RMSE']:.3f}", f"{moeda} {met_lstm['RMSE']:.3f}"],
-                'R² Score (Próximo a 1 é melhor)': [f"{met_xgb['R2']:.3f}", f"{met_lstm['R2']:.3f}"]
+                'Modelo': ['XGBoost (Árvores)', 'LSTM (Rede Neural)'],
+                'Acurácia Global': [f"{met_xgb['Acurácia']*100:.1f}%", f"{met_lstm['Acurácia']*100:.1f}%"],
+                'Precisão (Acerto nas Altas)': [f"{met_xgb['Precisão (Acerto de Altas)']*100:.1f}%", f"{met_lstm['Precisão (Acerto de Altas)']*100:.1f}%"]
             })
             st.dataframe(df_metricas, use_container_width=True, hide_index=True)
             
-            st.subheader(f"Projeção Futura Comparativa ({dias_predicao} dias)")
-            fig_ml = go.Figure()
-            dois_anos = df[df['Date'] >= (df['Date'].max() - timedelta(days=730))]
-            
-            fig_ml.add_trace(go.Scatter(x=dois_anos['Date'], y=dois_anos['Close'], line=dict(color='gray', width=1.5), name='Histórico Real'))
-            fig_ml.add_trace(go.Scatter(x=df_xgb['Date'], y=df_xgb['Predicao'], line=dict(color='red', width=2, dash='dash'), name='Predição XGBoost'))
-            fig_ml.add_trace(go.Scatter(x=df_lstm['Date'], y=df_lstm['Predicao'], line=dict(color='blue', width=2, dash='dot'), name='Predição LSTM'))
-            
-            fig_ml.update_layout(
-                height=500, template="plotly_white", margin=dict(l=0, r=0, t=40, b=0), 
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                yaxis_title=f"Preço ({moeda})"
-            )
-            st.plotly_chart(fig_ml, use_container_width=True)
-
             # --- BOTÃO DE EXPORTAÇÃO CSV ---
             st.markdown("---")
-            st.subheader("📥 Exportar Dados")
-            
-            df_hist_export = df[['Date', 'Close']].rename(columns={'Close': 'Preco_Real'})
-            df_xgb_export = df_xgb.rename(columns={'Predicao': 'Predicao_XGBoost'})
-            df_lstm_export = df_lstm.rename(columns={'Predicao': 'Predicao_LSTM'})
-            
-            df_export = pd.merge(df_hist_export, df_xgb_export, on='Date', how='outer')
-            df_export = pd.merge(df_export, df_lstm_export, on='Date', how='outer')
-            df_export = df_export.sort_values('Date').reset_index(drop=True)
-            
-            csv = df_export.to_csv(index=False).encode('utf-8')
-            
+            st.subheader("📥 Exportar Histórico de Dados")
+            st.write("Faça o download da base de dados histórica utilizada para treinar os modelos.")
+            csv = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="Descarregar Dados e Predições (CSV)",
+                label="Descarregar Dados (CSV)",
                 data=csv,
-                file_name=f"projecao_{ticker_symbol}_{datetime.now().strftime('%Y%m%d')}.csv",
+                file_name=f"historico_{ticker_symbol}_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
             )
 
@@ -352,7 +327,7 @@ if st.sidebar.button("Analisar Ativo"):
             if not api_key:
                 st.warning("Configure a Chave da API do Google AI Studio na barra lateral.")
             else:
-                with st.spinner("Sintetizando dados, coletando notícias e formulando o relatório..."):
+                with st.spinner("Sintetizando dados, coletando notícias e formulando o relatório direcional..."):
                     try:
                         genai.configure(api_key=api_key)
                         agente = genai.GenerativeModel(model_name='gemini-2.5-pro')
@@ -362,7 +337,6 @@ if st.sidebar.button("Analisar Ativo"):
                         volatilidade = df['Close'].tail(30).std()
                         
                         noticias_brutas = yf.Ticker(ticker_symbol).news
-                        
                         if not noticias_brutas:
                             if ticker_symbol == 'HG=F': noticias_brutas = yf.Ticker('CPER').news 
                             elif ticker_symbol == 'GC=F': noticias_brutas = yf.Ticker('GLD').news 
@@ -380,7 +354,7 @@ if st.sidebar.button("Analisar Ativo"):
                         
                         REGRAS CRÍTICAS DE FORMATAÇÃO:
                         1. NÃO escreva nenhuma frase introdutória ou saudações. Comece o texto DIRETAMENTE com o título "### 1. Cenário Macroeconômico e Geopolítico Atual".
-                        2. NÃO utilize formatação LaTeX matemática que possa quebrar o código (não use \c ou \~).
+                        2. NÃO utilize formatação LaTeX matemática que possa quebrar o código.
                         3. Para valores monetários, use a sigla {moeda} antes do número (ex: {moeda} 4.50).
                         
                         DADOS DE MERCADO ATUAIS:
@@ -391,16 +365,16 @@ if st.sidebar.button("Analisar Ativo"):
                         MANCHETES E EVENTOS DESTA SEMANA (Setor/Ativo):
                         {manchetes}
                         
-                        DADOS PREDITIVOS (Projeção para {dias_predicao} dias):
-                        - XGBoost: {moeda} {df_xgb['Predicao'].iloc[-1]:.2f} | MAE: {met_xgb['MAE']:.2f}, R²: {met_xgb['R2']:.2f}
-                        - LSTM: {moeda} {df_lstm['Predicao'].iloc[-1]:.2f} | MAE: {met_lstm['MAE']:.2f}, R²: {met_lstm['R2']:.2f}
-                        *(Nota: Valores de R² baixos ou negativos indicam que os modelos estão tendo dificuldade de capturar a tendência e as notícias fundamentais devem sobrepor a análise puramente técnica).*
+                        DADOS PREDITIVOS (Probabilidade de Fechar em ALTA daqui a {dias_predicao} dias):
+                        - XGBoost: {prob_xgb:.1f}% de chance | Histórico de Acurácia: {met_xgb['Acurácia']*100:.1f}%
+                        - LSTM: {prob_lstm:.1f}% de chance | Histórico de Acurácia: {met_lstm['Acurácia']*100:.1f}%
+                        *(Nota: Valores acima de 55% indicam viés direcional de alta, abaixo de 45% indicam baixa, e entre 45-55% é incerteza/ruído).*
                         
                         ESTRUTURA OBRIGATÓRIA:
                         ### 1. Cenário Macroeconômico e Geopolítico Atual
                         ### 2. Principais Impulsionadores de Preço (Drivers)
-                        ### 3. Impacto das Notícias e Eventos da Semana (Analise as manchetes fornecidas)
-                        ### 4. Avaliação dos Modelos Quantitativos (Analise as falhas ou acertos baseados no R²)
+                        ### 3. Impacto das Notícias e Eventos da Semana
+                        ### 4. Avaliação dos Modelos Quantitativos (Analise as probabilidades direcionais e a acurácia dos modelos)
                         ### 5. Perspectivas e Riscos Futuros
                         ### 6. Conclusão Executiva
                         """
@@ -409,7 +383,7 @@ if st.sidebar.button("Analisar Ativo"):
                         st.write(resposta.text)
                         
                         st.markdown("---")
-                        st.caption("⚠️ **Aviso Legal:** Este relatório é gerado por Inteligência Artificial a partir de modelos estatísticos. Não constitui recomendação de investimento.")
+                        st.caption("⚠️ **Aviso Legal:** Este relatório é gerado por Inteligência Artificial a partir de modelos estatísticos de probabilidade direcional. Não constitui recomendação de investimento.")
                         
                     except Exception as e:
                         st.error(f"Erro na comunicação com a API: {e}")
