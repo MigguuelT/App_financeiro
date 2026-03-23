@@ -1,5 +1,5 @@
 # ==============================================================================
-# PROJETO: ANALISADOR QUANTITATIVO MULTIVARIADO (VERSÃO FINAL COMPLETA)
+# PROJETO: ANALISADOR QUANTITATIVO (REFINAMENTO VISUAL)
 # ==============================================================================
 
 import streamlit as st
@@ -50,7 +50,11 @@ def carregar_dados_completos(ticker_principal, anos):
     start_date = end_date - timedelta(days=anos * 365)
     ticker_macro = "UUP" if not ticker_principal.endswith(".SA") else "USDBRL=X"
     try:
-        data = yf.download([ticker_principal, ticker_macro], start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), progress=False)['Close']
+        data = yf.download([ticker_principal, ticker_macro], start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), progress=False)
+        # Se for MultiIndex, seleciona apenas 'Close'
+        if 'Close' in data.columns.levels[0]:
+            data = data['Close']
+            
         if ticker_macro not in data.columns:
             data = data[[ticker_principal]].copy()
             data.columns = ['Ativo']
@@ -58,13 +62,19 @@ def carregar_dados_completos(ticker_principal, anos):
         else:
             data = data.reset_index().dropna().ffill()
             data.columns = ['Date', 'Macro', 'Ativo']
+            
+        # Para o gráfico de velas, precisamos baixar Open, High, Low também
+        df_full_ohlc = yf.download(ticker_principal, start=(end_date - timedelta(days=200)).strftime('%Y-%m-%d'), progress=False)
+        if isinstance(df_full_ohlc.columns, pd.MultiIndex):
+            df_full_ohlc.columns = df_full_ohlc.columns.get_level_values(0)
+            
         data['Ret_Ativo'] = data['Ativo'].pct_change()
         data['Ret_Macro'] = data['Macro'].pct_change()
         data['Correl_30d'] = data['Ret_Ativo'].rolling(30).corr(data['Ret_Macro'])
         data['Year'] = data['Date'].dt.year
-        return data.dropna(), ticker_macro
+        return data.dropna(), ticker_macro, df_full_ohlc
     except:
-        return pd.DataFrame(), ""
+        return pd.DataFrame(), "", pd.DataFrame()
 
 @st.cache_resource(show_spinner=False)
 def treinar_xgboost_multi(df, dias_futuros):
@@ -112,7 +122,7 @@ def treinar_lstm_multi(df, dias_futuros):
 # ==============================================================================
 
 if st.sidebar.button("Analisar Ativo"):
-    df_full, ticker_m = carregar_dados_completos(ticker_symbol, anos_historico)
+    df_full, ticker_m, df_ohlc = carregar_dados_completos(ticker_symbol, anos_historico)
     
     if not df_full.empty:
         try: moeda = yf.Ticker(ticker_symbol).fast_info.currency
@@ -130,9 +140,16 @@ if st.sidebar.button("Analisar Ativo"):
 
             st.markdown("---")
             st.subheader("Gráfico de Velas (Últimos 6 Meses)")
-            df_6m = df_full.tail(126) # aprox 6 meses úteis
-            fig_v = go.Figure(data=[go.Candlestick(x=df_6m['Date'], open=df_6m['Ativo'], high=df_6m['Ativo'], low=df_6m['Ativo'], close=df_6m['Ativo'])])
-            fig_v.update_layout(xaxis_rangeslider_visible=False, height=400, template="plotly_white")
+            # Correção do modo dispersão para modo Candlestick real
+            fig_v = go.Figure(data=[go.Candlestick(
+                x=df_ohlc.index,
+                open=df_ohlc['Open'],
+                high=df_ohlc['High'],
+                low=df_ohlc['Low'],
+                close=df_ohlc['Close'],
+                name=ticker_symbol
+            )])
+            fig_v.update_layout(xaxis_rangeslider_visible=False, height=450, template="plotly_white")
             st.plotly_chart(fig_v, width='stretch')
 
             col_d, col_b = st.columns(2)
@@ -140,13 +157,21 @@ if st.sidebar.button("Analisar Ativo"):
                 st.subheader("Distribuição de Frequência")
                 fig_d = go.Figure(go.Histogram(x=df_full['Ativo'], marker_color='lightblue', opacity=0.7))
                 m_avg, m_med = df_full['Ativo'].mean(), df_full['Ativo'].median()
-                fig_d.add_vline(x=m_avg, line_dash="dash", line_color="red", annotation_text=f"Média: {m_avg:.2f}")
-                fig_d.add_vline(x=m_med, line_dash="dash", line_color="green", annotation_text=f"Mediana: {m_med:.2f}")
+                
+                # Correção da sobreposição: yshift afasta os textos verticalmente
+                fig_d.add_vline(x=m_avg, line_dash="dash", line_color="red", 
+                                annotation_text=f"Média: {m_avg:.2f}", 
+                                annotation_position="top right", annotation_yshift=20)
+                fig_d.add_vline(x=m_med, line_dash="dash", line_color="green", 
+                                annotation_text=f"Mediana: {m_med:.2f}", 
+                                annotation_position="top right", annotation_yshift=0)
+                
                 fig_d.update_layout(template="plotly_white", height=350)
                 st.plotly_chart(fig_d, width='stretch')
             with col_b:
                 st.subheader("Box Plot de Preços")
-                fig_b = go.Figure(go.Box(y=df_full['Ativo'], marker_color='tan', boxmean=True))
+                # Correção da legenda trace0 para o nome do Ticker
+                fig_b = go.Figure(go.Box(y=df_full['Ativo'], name=ticker_symbol, marker_color='tan', boxmean=True))
                 fig_b.update_layout(template="plotly_white", height=350)
                 st.plotly_chart(fig_b, width='stretch')
 
