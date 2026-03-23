@@ -57,7 +57,6 @@ def carregar_e_processar_dados(ticker, anos):
 def prever_xgboost(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
     
-    # Feature Engineering: Expandindo a "memória"
     lags = [1, 2, 3, 4, 5, 7, 10, 14]
     for lag in lags:
         df_ml[f'Lag_{lag}'] = df_ml['Close'].shift(lag)
@@ -69,17 +68,16 @@ def prever_xgboost(df, dias_futuros):
     X_train, y_train = train[features], train['Close']
     X_test, y_test = test[features], test['Close']
     
-    # Tuning de Hiperparâmetros para evitar overfitting
+    # Tuning Otimizado para Velocidade e Performance
     parametros = {
         'objective': 'reg:squarederror',
-        'n_estimators': 200,
-        'learning_rate': 0.05,
-        'max_depth': 4,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8
+        'n_estimators': 100,      # Reduzido de 200 para ser 2x mais rápido
+        'learning_rate': 0.1,     # Aumentado para compensar a redução de árvores
+        'max_depth': 5,
+        'subsample': 0.9,
+        'colsample_bytree': 0.9
     }
     
-    # Modelo Avaliação
     modelo_aval = xgb.XGBRegressor(**parametros)
     modelo_aval.fit(X_train, y_train)
     pred_teste = modelo_aval.predict(X_test)
@@ -90,7 +88,6 @@ def prever_xgboost(df, dias_futuros):
         'R2': r2_score(y_test, pred_teste)
     }
     
-    # Modelo Final Futuro
     modelo_final = xgb.XGBRegressor(**parametros)
     modelo_final.fit(df_ml[features], df_ml['Close'])
     
@@ -100,7 +97,6 @@ def prever_xgboost(df, dias_futuros):
     for _ in range(dias_futuros):
         x_pred_dict = {f'Lag_{lag}': [historico_recente[-lag]] for lag in lags}
         x_pred = pd.DataFrame(x_pred_dict)
-        
         pred_atual = modelo_final.predict(x_pred)[0]
         predicoes.append(pred_atual)
         historico_recente.append(pred_atual)
@@ -114,7 +110,7 @@ def prever_lstm(df, dias_futuros):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df_ml['Close'].values.reshape(-1, 1))
     
-    lookback = 60 # Memória estendida
+    lookback = 60 
     X, y = [], []
     for i in range(lookback, len(scaled_data)):
         X.append(scaled_data[i-lookback:i, 0])
@@ -127,17 +123,16 @@ def prever_lstm(df, dias_futuros):
     
     def construir_modelo():
         modelo = Sequential()
-        modelo.add(LSTM(units=64, return_sequences=True, input_shape=(lookback, 1)))
-        modelo.add(Dropout(0.2))
-        modelo.add(LSTM(units=64, return_sequences=False))
+        # Arquitetura simplificada: 1 camada bem calibrada (2x mais rápido e previne overfitting)
+        modelo.add(LSTM(units=50, return_sequences=False, input_shape=(lookback, 1)))
         modelo.add(Dropout(0.2))
         modelo.add(Dense(units=1))
         modelo.compile(optimizer='adam', loss='mean_squared_error')
         return modelo
     
-    # Modelo Avaliação
     modelo_aval = construir_modelo()
-    modelo_aval.fit(X_train, y_train, batch_size=32, epochs=20, verbose=0)
+    # Menos épocas, o suficiente para aprender sem decorar o ruído
+    modelo_aval.fit(X_train, y_train, batch_size=32, epochs=15, verbose=0)
     
     pred_teste_scaled = modelo_aval.predict(X_test, verbose=0)
     pred_teste = scaler.inverse_transform(pred_teste_scaled).flatten()
@@ -149,9 +144,8 @@ def prever_lstm(df, dias_futuros):
         'R2': r2_score(y_test_real, pred_teste)
     }
     
-    # Modelo Final Futuro
     modelo_final = construir_modelo()
-    modelo_final.fit(X, y, batch_size=32, epochs=20, verbose=0)
+    modelo_final.fit(X, y, batch_size=32, epochs=15, verbose=0)
     
     ultimos_dias = scaled_data[-lookback:]
     predicoes_futuras = []
@@ -232,7 +226,7 @@ if st.sidebar.button("Analisar Ativo"):
             
             st.subheader("🏆 Comparação de Desempenho dos Modelos")
             df_metricas = pd.DataFrame({
-                'Modelo': ['XGBoost Tunado (Árvores)', 'LSTM (Deep Learning)'],
+                'Modelo': ['XGBoost Tunado', 'LSTM Otimizada'],
                 'MAE (Menor é melhor)': [f"${met_xgb['MAE']:.3f}", f"${met_lstm['MAE']:.3f}"],
                 'RMSE (Menor é melhor)': [f"${met_xgb['RMSE']:.3f}", f"${met_lstm['RMSE']:.3f}"],
                 'R² Score (Próximo a 1 é melhor)': [f"{met_xgb['R2']:.3f}", f"{met_lstm['R2']:.3f}"]
@@ -247,7 +241,6 @@ if st.sidebar.button("Analisar Ativo"):
             fig_ml.add_trace(go.Scatter(x=df_xgb['Date'], y=df_xgb['Predicao'], line=dict(color='red', width=2, dash='dash'), name='Predição XGBoost'))
             fig_ml.add_trace(go.Scatter(x=df_lstm['Date'], y=df_lstm['Predicao'], line=dict(color='blue', width=2, dash='dot'), name='Predição LSTM'))
             
-            # Ajuste da legenda para o lado esquerdo
             fig_ml.update_layout(
                 height=500, 
                 template="plotly_white", 
@@ -264,7 +257,7 @@ if st.sidebar.button("Analisar Ativo"):
             if not api_key:
                 st.warning("Configure a Chave da API do Google AI Studio na barra lateral.")
             else:
-                with st.spinner("Sintetizando dados quantitativos, coletando notícias frescas e formulando o relatório..."):
+                with st.spinner("Sintetizando dados, coletando notícias e formulando o relatório..."):
                     try:
                         genai.configure(api_key=api_key)
                         agente = genai.GenerativeModel(model_name='gemini-2.5-pro')
@@ -273,59 +266,57 @@ if st.sidebar.button("Analisar Ativo"):
                         variacao = ((preco_atual - df['Close'].iloc[-90]) / df['Close'].iloc[-90]) * 100 if len(df) > 90 else 0
                         volatilidade = df['Close'].tail(30).std()
                         
-                        ativo_yf = yf.Ticker(ticker_symbol)
-                        noticias_brutas = ativo_yf.news
+                        # --- SOLUÇÃO ROBUSTA PARA NOTÍCIAS (FALLBACK) ---
+                        noticias_brutas = yf.Ticker(ticker_symbol).news
+                        
+                        # Se não encontrar notícias (comum em contratos futuros), busca em ETFs correlacionados
+                        if not noticias_brutas:
+                            if ticker_symbol == 'HG=F': noticias_brutas = yf.Ticker('CPER').news # ETF Cobre
+                            elif ticker_symbol == 'GC=F': noticias_brutas = yf.Ticker('GLD').news # ETF Ouro
+                            elif ticker_symbol == 'SI=F': noticias_brutas = yf.Ticker('SLV').news # ETF Prata
+                            elif ticker_symbol in ['BZ=F', 'CL=F']: noticias_brutas = yf.Ticker('USO').news # ETF Petróleo
                         
                         if noticias_brutas:
                             manchetes = "\n".join([f"- {n.get('title', 'Sem título')} (Fonte: {n.get('publisher', 'Desconhecida')})" for n in noticias_brutas[:5]])
                         else:
-                            manchetes = "Nenhuma manchete específica de grande impacto encontrada nas últimas horas para este ticker diretamente."
+                            manchetes = "Notícias específicas não encontradas. Por favor, baseie a análise no cenário macroeconômico atual do setor."
 
                         prompt = f"""
                         Atue como um Analista Quantitativo Sênior e Estrategista Macroeconômico de um fundo de investimentos tier-1.
-                        Sua tarefa é redigir um relatório analítico executivo e profissional sobre o ativo {ticker_symbol}.
+                        Sua tarefa é redigir um relatório analítico executivo sobre o ativo {ticker_symbol}.
+                        
+                        REGRAS CRÍTICAS DE FORMATAÇÃO:
+                        1. NÃO escreva nenhuma frase introdutória ou saudações (como "Aqui está o relatório" ou "Com certeza"). Comece o texto DIRETAMENTE com o título "### 1. Cenário Macroeconômico e Geopolítico Atual".
+                        2. NÃO utilize formatação LaTeX matemática que possa quebrar o código (não use \c ou \~).
+                        3. Para valores monetários, use a sigla USD antes do número (ex: USD 4.50) para evitar bugs de renderização com múltiplos símbolos de cifrão.
                         
                         DADOS DE MERCADO ATUAIS:
-                        - Preço Atual: ${preco_atual:.2f}
+                        - Preço Atual: USD {preco_atual:.2f}
                         - Variação (3 Meses): {variacao:.2f}%
-                        - Volatilidade (Desvio Padrão 30d): ${volatilidade:.2f}
+                        - Volatilidade (Desvio Padrão 30d): USD {volatilidade:.2f}
                         
-                        MANCHETES E EVENTOS DESTA SEMANA SOBRE O ATIVO:
+                        MANCHETES E EVENTOS DESTA SEMANA (Setor/Ativo):
                         {manchetes}
                         
-                        DADOS DOS MODELOS PREDITIVOS (Projeção para {dias_predicao} dias):
-                        - Previsão XGBoost (Machine Learning): ${df_xgb['Predicao'].iloc[-1]:.2f} | Confiança do Modelo -> MAE: ${met_xgb['MAE']:.2f}, R²: {met_xgb['R2']:.2f}
-                        - Previsão LSTM (Deep Learning): ${df_lstm['Predicao'].iloc[-1]:.2f} | Confiança do Modelo -> MAE: ${met_lstm['MAE']:.2f}, R²: {met_lstm['R2']:.2f}
-                        *(Nota: R² próximo de 1 indica alta confiabilidade. MAE menor indica menor erro médio).*
+                        DADOS PREDITIVOS (Projeção para {dias_predicao} dias):
+                        - XGBoost: USD {df_xgb['Predicao'].iloc[-1]:.2f} | MAE: {met_xgb['MAE']:.2f}, R²: {met_xgb['R2']:.2f}
+                        - LSTM: USD {df_lstm['Predicao'].iloc[-1]:.2f} | MAE: {met_lstm['MAE']:.2f}, R²: {met_lstm['R2']:.2f}
+                        *(Nota: Valores de R² baixos ou negativos indicam que os modelos estão tendo dificuldade de capturar a tendência e as notícias fundamentais devem sobrepor a análise puramente técnica).*
                         
-                        Com base nesses dados quantitativos, nas manchetes frescas fornecidas e no seu amplo conhecimento do cenário global, gere um relatório formatado em Markdown com os seguintes tópicos obrigatórios:
-                        
+                        ESTRUTURA OBRIGATÓRIA:
                         ### 1. Cenário Macroeconômico e Geopolítico Atual
-                        Descreva o contexto global que afeta este ativo especificamente.
-                        
                         ### 2. Principais Impulsionadores de Preço (Drivers)
-                        Liste e explique os fatores centrais que estão movendo o preço do ativo no momento.
-                        
-                        ### 3. Impacto das Notícias e Eventos da Semana
-                        Analise rigorosamente como as manchetes recentes listadas acima (ou os fatos geopolíticos dos últimos dias) estão influenciando o sentimento do mercado e ditando a variação atual dos preços.
-                        
-                        ### 4. Avaliação dos Modelos Quantitativos
-                        Analise o desempenho do XGBoost vs LSTM com base no MAE e R². Os modelos concordam? A projeção matemática faz sentido ou está enviesada frente aos eventos geopolíticos da semana?
-                        
+                        ### 3. Impacto das Notícias e Eventos da Semana (Analise as manchetes fornecidas)
+                        ### 4. Avaliação dos Modelos Quantitativos (Analise as falhas ou acertos baseados no R²)
                         ### 5. Perspectivas e Riscos Futuros
-                        Projete o cenário esperado para os próximos {dias_predicao} dias. Inclua riscos de cauda (eventos inesperados que podem invalidar as predições).
-                        
                         ### 6. Conclusão Executiva
-                        Um parágrafo final resumindo a tese.
-                        
-                        O tom deve ser estritamente institucional, objetivo, sofisticado e imparcial.
                         """
                         
                         resposta = agente.generate_content(prompt)
                         st.write(resposta.text)
                         
                         st.markdown("---")
-                        st.caption("⚠️ **Aviso Legal:** Este relatório é gerado por Inteligência Artificial a partir de modelos estatísticos. Não constitui recomendação de compra, venda ou indicação de investimento. O mercado financeiro é volátil e os dados do passado não garantem rentabilidade futura.")
+                        st.caption("⚠️ **Aviso Legal:** Este relatório é gerado por Inteligência Artificial a partir de modelos estatísticos. Não constitui recomendação de investimento.")
                         
                     except Exception as e:
                         st.error(f"Erro na comunicação com a API: {e}")
