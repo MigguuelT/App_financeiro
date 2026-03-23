@@ -126,9 +126,16 @@ def prever_xgboost(df, dias_futuros):
 
 @st.cache_resource(show_spinner=False)
 def prever_lstm(df, dias_futuros):
-    df_ml = df[['Date', 'Close']].copy().dropna()
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(df_ml['Close'].values.reshape(-1, 1))
+    from sklearn.preprocessing import StandardScaler # Usamos o Standard em vez do MinMax para a variação
+    
+    df_ml = df[['Date', 'Close']].copy()
+    
+    # O PULO DO GATO: Prever a diferença diária (momentum) e não o preço absoluto
+    df_ml['Diff'] = df_ml['Close'].diff()
+    df_ml = df_ml.dropna()
+    
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(df_ml['Diff'].values.reshape(-1, 1))
     
     lookback = 21 
     X, y = [], []
@@ -150,35 +157,57 @@ def prever_lstm(df, dias_futuros):
         modelo.compile(optimizer=otimizador, loss='mean_squared_error')
         return modelo
     
-    early_stop = EarlyStopping(monitor='loss', patience=4, restore_best_weights=True)
+    early_stop = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
     
+    # 1. Treino para Avaliação (Test Set)
     modelo_aval = construir_modelo()
     modelo_aval.fit(X_train, y_train, batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
     
     pred_teste_scaled = modelo_aval.predict(X_test, verbose=0)
-    pred_teste = scaler.inverse_transform(pred_teste_scaled).flatten()
-    y_test_real = scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+    pred_teste_diff = scaler.inverse_transform(pred_teste_scaled).flatten()
+    
+    # Reconstruir os preços do Teste a partir das variações previstas
+    preco_base_teste = df_ml['Close'].iloc[-(dias_futuros + 1)]
+    pred_teste_preco = []
+    preco_atual = preco_base_teste
+    
+    for diff in pred_teste_diff:
+        preco_atual += diff
+        pred_teste_preco.append(preco_atual)
+        
+    y_test_real_preco = df_ml['Close'].iloc[-dias_futuros:].values
     
     metricas = {
-        'MAE': mean_absolute_error(y_test_real, pred_teste),
-        'RMSE': np.sqrt(mean_squared_error(y_test_real, pred_teste)),
-        'R2': r2_score(y_test_real, pred_teste)
+        'MAE': mean_absolute_error(y_test_real_preco, pred_teste_preco),
+        'RMSE': np.sqrt(mean_squared_error(y_test_real_preco, pred_teste_preco)),
+        'R2': r2_score(y_test_real_preco, pred_teste_preco)
     }
     
+    # 2. Treino Final para o Futuro
     modelo_final = construir_modelo()
     modelo_final.fit(X, y, batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
     
-    ultimos_dias = scaled_data[-lookback:]
-    predicoes_futuras = []
+    ultimos_dias_diff = scaled_data[-lookback:]
+    predicoes_futuras_diff = []
+    
     for _ in range(dias_futuros):
-        x_pred = np.reshape(ultimos_dias, (1, lookback, 1))
+        x_pred = np.reshape(ultimos_dias_diff, (1, lookback, 1))
         pred_atual_scaled = modelo_final.predict(x_pred, verbose=0)
-        predicoes_futuras.append(pred_atual_scaled[0, 0])
-        ultimos_dias = np.append(ultimos_dias[1:], pred_atual_scaled, axis=0)
+        predicoes_futuras_diff.append(pred_atual_scaled[0, 0])
+        ultimos_dias_diff = np.append(ultimos_dias_diff[1:], pred_atual_scaled, axis=0)
         
-    predicoes_futuras = scaler.inverse_transform(np.array(predicoes_futuras).reshape(-1, 1)).flatten()
+    predicoes_futuras_diff = scaler.inverse_transform(np.array(predicoes_futuras_diff).reshape(-1, 1)).flatten()
+    
+    # Reconstruir os preços do Futuro
+    preco_ultimo_real = df_ml['Close'].iloc[-1]
+    predicoes_futuras_preco = []
+    
+    for diff in predicoes_futuras_diff:
+        preco_ultimo_real += diff
+        predicoes_futuras_preco.append(preco_ultimo_real)
+        
     datas_futuras = [df_ml['Date'].iloc[-1] + timedelta(days=i) for i in range(1, dias_futuros + 1)]
-    return pd.DataFrame({'Date': datas_futuras, 'Predicao': predicoes_futuras}), metricas
+    return pd.DataFrame({'Date': datas_futuras, 'Predicao': predicoes_futuras_preco}), metricas
 
 # --- Execução Principal ---
 if st.sidebar.button("Analisar Ativo"):
