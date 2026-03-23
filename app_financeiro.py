@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -57,14 +56,31 @@ def carregar_e_processar_dados(ticker, anos):
 @st.cache_resource(show_spinner=False)
 def prever_xgboost(df, dias_futuros):
     df_ml = df[['Date', 'Close']].copy()
-    df_ml['Lag_1'], df_ml['Lag_2'], df_ml['Lag_7'] = df_ml['Close'].shift(1), df_ml['Close'].shift(2), df_ml['Close'].shift(7)
+    
+    # Feature Engineering: Expandindo a "memória"
+    lags = [1, 2, 3, 4, 5, 7, 10, 14]
+    for lag in lags:
+        df_ml[f'Lag_{lag}'] = df_ml['Close'].shift(lag)
+        
     df_ml = df_ml.dropna()
+    features = [f'Lag_{lag}' for lag in lags]
     
     train, test = df_ml.iloc[:-dias_futuros], df_ml.iloc[-dias_futuros:]
-    X_train, y_train = train[['Lag_1', 'Lag_2', 'Lag_7']], train['Close']
-    X_test, y_test = test[['Lag_1', 'Lag_2', 'Lag_7']], test['Close']
+    X_train, y_train = train[features], train['Close']
+    X_test, y_test = test[features], test['Close']
     
-    modelo_aval = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1)
+    # Tuning de Hiperparâmetros para evitar overfitting
+    parametros = {
+        'objective': 'reg:squarederror',
+        'n_estimators': 200,
+        'learning_rate': 0.05,
+        'max_depth': 4,
+        'subsample': 0.8,
+        'colsample_bytree': 0.8
+    }
+    
+    # Modelo Avaliação
+    modelo_aval = xgb.XGBRegressor(**parametros)
     modelo_aval.fit(X_train, y_train)
     pred_teste = modelo_aval.predict(X_test)
     
@@ -74,12 +90,18 @@ def prever_xgboost(df, dias_futuros):
         'R2': r2_score(y_test, pred_teste)
     }
     
-    modelo_final = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1)
-    modelo_final.fit(df_ml[['Lag_1', 'Lag_2', 'Lag_7']], df_ml['Close'])
+    # Modelo Final Futuro
+    modelo_final = xgb.XGBRegressor(**parametros)
+    modelo_final.fit(df_ml[features], df_ml['Close'])
     
-    predicoes, historico_recente = [], list(df_ml['Close'].tail(7).values)
+    predicoes = []
+    historico_recente = list(df_ml['Close'].tail(max(lags)).values)
+    
     for _ in range(dias_futuros):
-        pred_atual = modelo_final.predict(pd.DataFrame([[historico_recente[-1], historico_recente[-2], historico_recente[-7]]], columns=['Lag_1', 'Lag_2', 'Lag_7']))[0]
+        x_pred_dict = {f'Lag_{lag}': [historico_recente[-lag]] for lag in lags}
+        x_pred = pd.DataFrame(x_pred_dict)
+        
+        pred_atual = modelo_final.predict(x_pred)[0]
         predicoes.append(pred_atual)
         historico_recente.append(pred_atual)
         
@@ -92,7 +114,7 @@ def prever_lstm(df, dias_futuros):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df_ml['Close'].values.reshape(-1, 1))
     
-    lookback = 60 # Memória estendida para 2 meses
+    lookback = 60 # Memória estendida
     X, y = [], []
     for i in range(lookback, len(scaled_data)):
         X.append(scaled_data[i-lookback:i, 0])
@@ -145,7 +167,7 @@ def prever_lstm(df, dias_futuros):
 
 # --- Execução Principal ---
 if st.sidebar.button("Analisar Ativo"):
-    with st.spinner("Baixando dados do Yahoo Finance... (Isto será rápido nas próximas vezes)"):
+    with st.spinner("Baixando dados do Yahoo Finance..."):
         df = carregar_e_processar_dados(ticker_symbol, anos_historico)
         
     if df.empty:
@@ -178,7 +200,6 @@ if st.sidebar.button("Analisar Ativo"):
                 fig_dist = go.Figure()
                 fig_dist.add_trace(go.Histogram(x=df['Close'], marker_color='lightblue', opacity=0.7))
                 media, mediana = df['Close'].mean(), df['Close'].median()
-                # Textos posicionados para evitar sobreposição
                 fig_dist.add_vline(x=media, line_dash="dash", line_color="red", annotation_text=f"Média: {media:.2f}", annotation_position="top right")
                 fig_dist.add_vline(x=mediana, line_dash="dash", line_color="green", annotation_text=f"Mediana: {mediana:.2f}", annotation_position="bottom right")
                 fig_dist.update_layout(height=350, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
@@ -211,7 +232,7 @@ if st.sidebar.button("Analisar Ativo"):
             
             st.subheader("🏆 Comparação de Desempenho dos Modelos")
             df_metricas = pd.DataFrame({
-                'Modelo': ['XGBoost (Árvores)', 'LSTM (Deep Learning)'],
+                'Modelo': ['XGBoost Tunado (Árvores)', 'LSTM (Deep Learning)'],
                 'MAE (Menor é melhor)': [f"${met_xgb['MAE']:.3f}", f"${met_lstm['MAE']:.3f}"],
                 'RMSE (Menor é melhor)': [f"${met_xgb['RMSE']:.3f}", f"${met_lstm['RMSE']:.3f}"],
                 'R² Score (Próximo a 1 é melhor)': [f"{met_xgb['R2']:.3f}", f"{met_lstm['R2']:.3f}"]
