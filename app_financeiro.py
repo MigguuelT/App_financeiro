@@ -142,7 +142,9 @@ def prever_lstm(df, dias_futuros):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df_ml['Close'].values.reshape(-1, 1))
     
-    lookback = 60 
+    # 1. Reduzimos a memória para 21 dias (1 mês útil). 
+    # Em ações ruidosas como GOOG, olhar 60 dias de preços crus confunde o modelo.
+    lookback = 21 
     X, y = [], []
     for i in range(lookback, len(scaled_data)):
         X.append(scaled_data[i-lookback:i, 0])
@@ -155,18 +157,21 @@ def prever_lstm(df, dias_futuros):
     
     def construir_modelo():
         modelo = Sequential()
-        modelo.add(LSTM(units=50, return_sequences=False, input_shape=(lookback, 1)))
-        modelo.add(Dropout(0.2))
-        modelo.add(Dense(units=1))
-        modelo.compile(optimizer='adam', loss='mean_squared_error')
+        # 2. Arquitetura mais enxuta (32 neurônios) para não decorar o ruído
+        modelo.add(LSTM(units=32, return_sequences=False, input_shape=(lookback, 1)))
+        modelo.add(Dropout(0.2)) # Mantemos o dropout para forçar a generalização
+        modelo.add(Dense(units=1)) # Ativação linear (sem sigmoid) para permitir novas máximas históricas
+        
+        # Usamos uma taxa de aprendizado ligeiramente menor para estabilizar o treino
+        otimizador = tf.keras.optimizers.Adam(learning_rate=0.001)
+        modelo.compile(optimizer=otimizador, loss='mean_squared_error')
         return modelo
     
-    # Implementando o Early Stopping para evitar overfitting da rede
-    early_stop = EarlyStopping(monitor='loss', patience=3, restore_best_weights=True)
+    # 3. Early Stopping mais rigoroso (para rápido se a perda de validação piorar)
+    early_stop = EarlyStopping(monitor='loss', patience=4, restore_best_weights=True)
     
     modelo_aval = construir_modelo()
-    # Aumentamos as épocas, mas o early stop cortará antes se necessário
-    modelo_aval.fit(X_train, y_train, batch_size=32, epochs=30, verbose=0, callbacks=[early_stop])
+    modelo_aval.fit(X_train, y_train, batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
     
     pred_teste_scaled = modelo_aval.predict(X_test, verbose=0)
     pred_teste = scaler.inverse_transform(pred_teste_scaled).flatten()
@@ -179,7 +184,7 @@ def prever_lstm(df, dias_futuros):
     }
     
     modelo_final = construir_modelo()
-    modelo_final.fit(X, y, batch_size=32, epochs=30, verbose=0, callbacks=[early_stop])
+    modelo_final.fit(X, y, batch_size=16, epochs=40, verbose=0, callbacks=[early_stop])
     
     ultimos_dias = scaled_data[-lookback:]
     predicoes_futuras = []
