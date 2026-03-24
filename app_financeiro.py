@@ -1,5 +1,5 @@
 # ==============================================================================
-# PROJETO: ANALISADOR QUANTITATIVO MULTIVARIADO (ESTÁVEL & FLASH IA)
+# PROJETO: ANALISADOR QUANTITATIVO MULTIVARIADO (TESTE DE CORRELAÇÕES)
 # ==============================================================================
 
 import streamlit as st
@@ -29,7 +29,9 @@ st.title("📈 Inteligência Quantitativa: Estratégia Multivariada e IA")
 
 # --- BARRA LATERAL ---
 st.sidebar.header("Parâmetros Institucionais")
-ticker_symbol = st.sidebar.text_input("Ativo Principal:", "IAU").upper()
+# NOVO: Agora você tem controle total sobre os dois ativos do teste!
+ticker_symbol = st.sidebar.text_input("Ativo Principal (ex: QQQ, IAU):", "QQQ").upper()
+ticker_macro_input = st.sidebar.text_input("Indexador Macro (ex: ^TNX, UUP):", "^TNX").upper()
 anos_historico = st.sidebar.number_input("Histórico (Anos):", 1, 20, 10)
 dias_predicao = st.sidebar.slider("Janela de Predição (Dias):", 10, 90, 30)
 
@@ -45,10 +47,10 @@ st.sidebar.markdown("---")
 # ==============================================================================
 
 @st.cache_data(ttl="1h", show_spinner=False)
-def carregar_dados_completos(ticker_principal, anos):
+def carregar_dados_completos(ticker_principal, ticker_macro, anos):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=anos * 365)
-    ticker_macro = "UUP" if not ticker_principal.endswith(".SA") else "USDBRL=X"
+    
     try:
         data = yf.download([ticker_principal, ticker_macro], start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), progress=False)
         
@@ -61,9 +63,7 @@ def carregar_dados_completos(ticker_principal, anos):
             data['Macro'] = data['Ativo'] 
         else:
             data = data.reset_index().dropna().ffill()
-            # CORREÇÃO CRÍTICA: Renomeando pelas chaves exatas para evitar inversão alfabética
             data = data.rename(columns={ticker_principal: 'Ativo', ticker_macro: 'Macro'})
-            # Garantindo a ordem das colunas
             data = data[['Date', 'Macro', 'Ativo']]
             
         df_full_ohlc = yf.download(ticker_principal, start=(end_date - timedelta(days=200)).strftime('%Y-%m-%d'), progress=False)
@@ -125,7 +125,8 @@ def treinar_lstm_multi(df, dias_futuros):
 # ==============================================================================
 
 if st.sidebar.button("Analisar Ativo"):
-    df_full, ticker_m, df_ohlc = carregar_dados_completos(ticker_symbol, anos_historico)
+    # Passando os dois ativos escolhidos pelo usuário na barra lateral
+    df_full, ticker_m, df_ohlc = carregar_dados_completos(ticker_symbol, ticker_macro_input, anos_historico)
     
     if not df_full.empty:
         try: moeda = yf.Ticker(ticker_symbol).fast_info.currency
@@ -144,17 +145,12 @@ if st.sidebar.button("Analisar Ativo"):
             st.markdown("---")
             st.subheader("Gráfico de Velas (Últimos 6 Meses)")
             fig_v = go.Figure(data=[go.Candlestick(
-                x=df_ohlc.index,
-                open=df_ohlc['Open'],
-                high=df_ohlc['High'],
-                low=df_ohlc['Low'],
-                close=df_ohlc['Close'],
-                name=ticker_symbol
+                x=df_ohlc.index, open=df_ohlc['Open'], high=df_ohlc['High'], low=df_ohlc['Low'], close=df_ohlc['Close'], name=ticker_symbol
             )])
             fig_v.update_layout(
                 xaxis_rangeslider_visible=False, height=400, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0),
                 xaxis_title="Data",
-                yaxis_title=f"Preço do Ativo ({moeda})"
+                yaxis_title=f"Preço ({moeda})" # Adicionado rótulo Y
             )
             st.plotly_chart(fig_v, use_container_width=True)
 
@@ -164,35 +160,53 @@ if st.sidebar.button("Analisar Ativo"):
                 fig_d = go.Figure(go.Histogram(x=df_full['Ativo'], marker_color='lightblue', opacity=0.7))
                 m_avg, m_med = df_full['Ativo'].mean(), df_full['Ativo'].median()
                 
-                fig_d.add_vline(x=m_avg, line_dash="dash", line_color="red", 
-                                annotation_text=f"Média: {m_avg:.2f}", 
-                                annotation_position="top right", annotation_yshift=20)
-                fig_d.add_vline(x=m_med, line_dash="dash", line_color="green", 
-                                annotation_text=f"Mediana: {m_med:.2f}", 
-                                annotation_position="top right", annotation_yshift=0)
+                fig_d.add_vline(x=m_avg, line_dash="dash", line_color="red", annotation_text=f"Média: {moeda} {m_avg:.2f}", annotation_position="top right", annotation_yshift=20)
+                fig_d.add_vline(x=m_med, line_dash="dash", line_color="green", annotation_text=f"Mediana: {moeda} {m_med:.2f}", annotation_position="top right", annotation_yshift=0)
                 
-                fig_d.update_layout(template="plotly_white", height=350)
+                # Adicionados rótulos X e Y
+                fig_d.update_layout(
+                    template="plotly_white", height=350,
+                    xaxis_title=f"Preço de Fechamento ({moeda})",
+                    yaxis_title="Frequência (Dias)"
+                )
                 st.plotly_chart(fig_d, width='stretch')
+                
             with col_b:
                 st.subheader("Box Plot de Preços")
                 fig_b = go.Figure(go.Box(y=df_full['Ativo'], name=ticker_symbol, marker_color='tan', boxmean=True))
-                fig_b.update_layout(template="plotly_white", height=350)
+                
+                # Adicionado rótulo Y
+                fig_b.update_layout(
+                    template="plotly_white", height=350,
+                    yaxis_title=f"Distribuição de Preço ({moeda})"
+                )
                 st.plotly_chart(fig_b, width='stretch')
 
             st.markdown("---")
             st.subheader("Comparação Anual e Variação")
+            
+            # CORREÇÃO DA TABELA: Nomes concretos nas colunas
             df_y = df_full.groupby('Year')['Ativo'].mean().reset_index()
-            df_y['Var %'] = df_y['Ativo'].pct_change() * 100
-            def style_neg(v): return f'color: {"red" if v < 0 else "green"}; font-weight: bold;' if pd.notnull(v) else ""
-            st.dataframe(df_y.style.applymap(style_neg, subset=['Var %']).format({'Ativo': '{:.2f}', 'Var %': '{:.2f}%'}), width='stretch', hide_index=True)
+            nome_coluna_preco = f'Preço Médio ({moeda})'
+            df_y.columns = ['Ano', nome_coluna_preco]
+            df_y['Variação (%)'] = df_y[nome_coluna_preco].pct_change() * 100
+            
+            def style_neg(v): 
+                return f'color: {"red" if v < 0 else "green"}; font-weight: bold;' if pd.notnull(v) else ""
+            
+            st.dataframe(
+                df_y.style.applymap(style_neg, subset=['Variação (%)']).format({
+                    nome_coluna_preco: '{:.2f}', 
+                    'Variação (%)': '{:.2f}%'
+                }), 
+                width='stretch', hide_index=True
+            )
 
         with aba_ml:
             with st.spinner("Treinando modelos multivariados..."):
                 p_xgb, a_xgb = treinar_xgboost_multi(df_full, dias_predicao)
                 p_lstm, a_lstm = treinar_lstm_multi(df_full, dias_predicao)
             st.subheader(f"Probabilidades Direcionais ({dias_predicao} dias)")
-            
-            # CORREÇÃO: Adicionado eixo Y fantasma para as barras ficarem espessas
             def bar_p(probs, title):
                 fig = go.Figure(go.Bar(y=[''], x=[probs[0]], name='Baixa', orientation='h', marker_color='#ffcccb'))
                 fig.add_trace(go.Bar(y=[''], x=[probs[1]], name='Neutro', orientation='h', marker_color='#f0f0f0'))
@@ -206,7 +220,6 @@ if st.sidebar.button("Analisar Ativo"):
         with aba_ia:
             if api_key:
                 try:
-                    # CORREÇÃO: Utilizando o modelo Gemini 2.0 Flash para otimizar tokens e velocidade
                     genai.configure(api_key=api_key)
                     model_ia = genai.GenerativeModel('gemini-2.0-flash')
                     prompt = f"""
