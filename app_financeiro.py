@@ -149,8 +149,15 @@ if st.sidebar.button("Analisar Ativo"):
                 close=df_ohlc['Close'],
                 name=ticker_symbol
             )])
-            fig_v.update_layout(xaxis_rangeslider_visible=False, height=450, template="plotly_white")
-            st.plotly_chart(fig_v, width='stretch')
+            # fig_v.update_layout(xaxis_rangeslider_visible=False, height=450, template="plotly_white")
+            # st.plotly_chart(fig_v, width='stretch')
+            
+            fig_v.update_layout(
+                xaxis_rangeslider_visible=False, height=400, template="plotly_white", margin=dict(l=0, r=0, t=30, b=0),
+                xaxis_title="Data",
+                yaxis_title=f"Preço do Ativo ({moeda})"
+            )
+            st.plotly_chart(fig_v, use_container_width=True) # Joga o gráfico na tela
 
             col_d, col_b = st.columns(2)
             with col_d:
