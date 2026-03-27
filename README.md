@@ -39,12 +39,21 @@ A organização das pastas foi projetada para garantir que caminhos absolutos e 
 ### 📂 Estrutura do Projeto
 
 
-projeto_quant/
+raiz_do_projeto/
+
 ├── airflow_home/           # Configurações, DB e logs do Airflow
+
 ├── dags/
+
 │   └── dag_treinamento_quant.py    # Orquestrador e Agendamento
+
 ├── scripts/
+
 │   ├── pipeline_treino.py          # ETL, Treino e Exportação
+
 │   └── app_financeiro.py           # Interface Streamlit
+
 ├── data/                           # Snapshots de dados (.csv)
+
 └── models/                         # Pesos (.keras, .joblib) e métricas (.json)
+
