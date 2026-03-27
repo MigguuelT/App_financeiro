@@ -36,12 +36,15 @@ O que acontece sob o capô: A DAG executa o pipeline_treino.py, que realiza o do
 ## 📂 Estrutura do Projeto para Airflow
 A organização das pastas foi projetada para garantir que caminhos absolutos e relativos funcionem de forma harmônica entre o orquestrador e a interface: 
 
-raiz_do_projeto/
-├── airflow_home/           # Arquivos de sistema, DB e logs do Airflow
+### 📂 Estrutura do Projeto
+
+
+projeto_quant/
+├── airflow_home/           # Configurações, DB e logs do Airflow
 ├── dags/
-│   └── dag_treinamento_quant.py    # Orquestração e Agendamento
+│   └── dag_treinamento_quant.py    # Orquestrador e Agendamento
 ├── scripts/
-│   ├── pipeline_treino.py          # Lógica de Treino, ETL e Exportação
-│   └── app_financeiro.py           # Dashboard Streamlit
-├── data/                           # Snapshots de dados processados (.csv)
+│   ├── pipeline_treino.py          # ETL, Treino e Exportação
+│   └── app_financeiro.py           # Interface Streamlit
+├── data/                           # Snapshots de dados (.csv)
 └── models/                         # Pesos (.keras, .joblib) e métricas (.json)
