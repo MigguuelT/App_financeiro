@@ -20,3 +20,28 @@ Este aplicativo não tenta prever o preço exato de uma ação amanhã (o que ge
 2. Crie um ambiente virtual (Python 3.11 recomendado).
 3. Instale as dependências: `pip install -r requirements.txt`
 4. Execute o terminal: `streamlit run app_financeiro.py`
+
+## ⚙️ Versão 2: Airflow (Orquestração e MLOps)
+
+Esta versão é o motor do projeto. Ela garante que os modelos estejam sempre atualizados com os dados mais recentes do mercado, sem intervenção manual.
+
+Como utilizar:
+
+1. Configure a variável de ambiente: export AIRFLOW_HOME=~/raiz_do_projeto
+2. Inicie o Airflow Standalone: airflow standalone
+3. Acesse localhost:8080 e ative a DAG dag_treinamento_quant_final
+
+O que acontece sob o capô: A DAG executa o pipeline_treino.py, que realiza o download dos dados via Yahoo Finance, treina os modelos com Walk-Forward Validation, calcula as acurácias e salva tudo em arquivos de metadados JSON.
+
+## 📂 Estrutura do Projeto para Airflow
+A organização das pastas foi projetada para garantir que caminhos absolutos e relativos funcionem de forma harmônica entre o orquestrador e a interface: 
+
+raiz_do_projeto/
+├── airflow_home/           # Arquivos de sistema, DB e logs do Airflow
+├── dags/
+│   └── dag_treinamento_quant.py    # Orquestração e Agendamento
+├── scripts/
+│   ├── pipeline_treino.py          # Lógica de Treino, ETL e Exportação
+│   └── app_financeiro.py           # Dashboard Streamlit
+├── data/                           # Snapshots de dados processados (.csv)
+└── models/                         # Pesos (.keras, .joblib) e métricas (.json)
