@@ -30,6 +30,7 @@ Como utilizar:
 1. Configure a variável de ambiente: export AIRFLOW_HOME=~/raiz_do_projeto
 2. Inicie o Airflow Standalone: airflow standalone
 3. Acesse localhost:8080 e ative a DAG dag_treinamento_quant_final
+4. Execute o terminal: `streamlit run app_financeiro.py`
 
 O que acontece sob o capô: A DAG executa o pipeline_treino.py, que realiza o download dos dados via Yahoo Finance, treina os modelos com Walk-Forward Validation, calcula as acurácias e salva tudo em arquivos de metadados JSON.
 
