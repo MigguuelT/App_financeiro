@@ -98,7 +98,7 @@ if assets:
             if api_key:
                 try:
                     genai.configure(api_key=api_key)
-                    model_ia = genai.GenerativeModel('gemini-2.0-flash')
+                    model_ia = genai.GenerativeModel('gemma-3-27b-it')
                     prompt = f"""
                     Atue como Gestor Sênior de Investimentos. Analise os seguintes dados quantitativos para {ticker_alvo.upper()}:
                     - Preço Atual: ${preco_atual:.2f}
