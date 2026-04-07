@@ -323,7 +323,7 @@ if st.sidebar.button("Analisar Ativo"):
             if api_key:
                 try:
                     genai.configure(api_key=api_key)
-                    model_ia = genai.GenerativeModel('gemini-2.0-flash')
+                    model_ia = genai.GenerativeModel('gemma-3-27b-it')
                     prompt = f"""
                     Atue como Gestor Sênior. Gere um relatório executivo ESTRITAMENTE técnico para {ticker_symbol}.
                     PROIBIDO: Não use saudações como "Claro", "Aqui está" ou "Olá". Comece direto no conteúdo.
